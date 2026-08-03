@@ -287,6 +287,24 @@ def _get_deterministic_isf[L: Lattice[Any]](
 
 
 @timed
+def plot_probability_matrix(
+    result: DeterministicSolverResult,
+    *,
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot the probability matrix as a heatmap."""
+    fig, ax = get_figure(ax)
+
+    im = ax.imshow(result.probability_matrix, aspect="auto", origin="lower")
+    fig.colorbar(im, ax=ax)
+    ax.set_xlabel("Lattice site index")
+    ax.set_ylabel("Time index, reversed")
+    ax.set_ylim(len(result.times), len(result.times) - 200)
+
+    return fig, ax
+
+
+@timed
 def plot_deterministic_isf[L: Lattice[Any]](
     system: L,
     result: DeterministicSolverResult,
@@ -299,6 +317,40 @@ def plot_deterministic_isf[L: Lattice[Any]](
 
     isf = _get_deterministic_isf(system, result.probability_matrix, delta_k)
     (line,) = ax.plot(np.array(result.times), np.array(isf))
+    line.set_label("ISF")
+
+    ax.set_xlabel("Time / s")
+    ax.set_ylabel("ISF")
+
+    return fig, ax, line
+
+
+@timed
+def _get_1d_periodic_deterministic_isf[L: Lattice[Any]](
+    system: L,
+    times: jnp.ndarray,
+    delta_k: float,
+) -> jnp.ndarray:
+    z = 2  # No. nearest neighbours in 1D
+    hop_rate = 1.0 / system.hop_time
+    structure_factor = jnp.cos(delta_k * system.lattice_spacing)
+    return jnp.exp(-z * hop_rate * (1 - structure_factor) * times)
+
+
+@timed
+def plot_1d_periodic_deterministic_isf[L: Lattice[Any]](
+    system: L,
+    time_span: TimeSpan,
+    delta_k: float,
+    *,
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes, Line2D]:
+    """Plot the ensemble-averaged ISF over time."""
+    times = jnp.linspace(time_span.t_start, time_span.t_end, time_span.n_steps)
+    fig, ax = get_figure(ax)
+
+    isf = _get_1d_periodic_deterministic_isf(system, times, delta_k)
+    (line,) = ax.plot(np.array(times), np.array(isf))
     line.set_label("ISF")
 
     ax.set_xlabel("Time / s")
