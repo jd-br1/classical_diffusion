@@ -160,7 +160,10 @@ def plot_x_evolution(
         lines.append(line)
 
     ax.set_xlabel("$t / characteristic time$")
-    ax.set_ylabel("$x$")
+    if idx == 0:
+        ax.set_ylabel("$x$")
+    elif idx == 1:
+        ax.set_ylabel("$y$")
 
     return fig, ax, lines
 
@@ -196,3 +199,19 @@ def plot_p_evolution(
     ax.set_ylabel("$p$")
 
     return fig, ax, lines
+
+
+def plot_xy_trajectory(
+    result: SimulationResult,
+    *,
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes, Line2D]:
+    """Plot x against y for the first trajectory."""
+    fig, ax = get_figure(ax)
+
+    (line,) = ax.plot(result.x_points[0, 0], result.x_points[0, 1])
+
+    ax.set_xlabel("$x$")
+    ax.set_ylabel("$y$")
+
+    return fig, ax, line

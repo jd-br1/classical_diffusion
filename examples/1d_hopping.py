@@ -2,7 +2,10 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
 
-from classical_diffusion.analysis import plot_isf, plot_x_evolution
+from classical_diffusion.analysis import (
+    plot_isf,
+    plot_x_evolution,
+)
 from classical_diffusion.hopping import (
     Lattice1D,
     solve_ensemble,

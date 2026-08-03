@@ -212,7 +212,7 @@ def get_deterministic_probabilities[L: Lattice[Any]](
     # M[a,a] = sum_i ( rates a -> i)
 
     max_lattice_index = jnp.prod(jnp.array(finite_lattice_shape))
-    all_sites = jnp.arange(0, max_lattice_index)
+    all_sites = (jnp.arange(0, max_lattice_index) + 1)[:, None]
 
     times = jnp.linspace(time_span.t_start, time_span.t_end, time_span.n_steps)
     initial_p = jnp.full(max_lattice_index, 0.0)
@@ -227,8 +227,8 @@ def get_deterministic_probabilities[L: Lattice[Any]](
         _args: Any,  # ruff:ignore[any-type]
     ) -> jnp.ndarray:
 
-        hop_sites, hop_rates = system.get_rates(all_sites)
-
+        hop_sites_coords, hop_rates = system.get_rates(all_sites)
+        hop_sites = hop_sites_coords[:, :, 0]  # shape (N, 4)
         # p[hop_site] has shape (N, 4)
         # hop_rates    has shape (N, 4)
         """
