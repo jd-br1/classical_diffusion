@@ -7,6 +7,10 @@ from classical_diffusion.hopping._hopping import (
     get_ensemble_probabilities,
     solve_ensemble,
 )
+from classical_diffusion.hopping._hopping import (
+    _get_deterministic_probabilities_jit as deterministic,
+)
+from classical_diffusion.hopping._hopping import _get_jensen_probabilities_jit as jensen
 from classical_diffusion.hopping._system import (
     KramersParameters,
     Lattice,
@@ -22,9 +26,11 @@ __all__ = [
     "KramersParameters",
     "Lattice",
     "Lattice1D",
+    "deterministic",
     "get_ensemble_probabilities",
     "get_kramers_parameters_cosine",
     "get_kramers_rate",
+    "jensen",
     "lattice_1d_from_kramers_parameters",
     "plot_deterministic_isf",
     "solve_ensemble",
