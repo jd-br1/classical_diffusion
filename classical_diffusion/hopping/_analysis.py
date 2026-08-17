@@ -4,7 +4,6 @@ import numpy as np
 
 from classical_diffusion.hopping._system import Lattice
 from classical_diffusion.plot import get_figure
-from classical_diffusion.util import timed
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -14,7 +13,6 @@ if TYPE_CHECKING:
     from classical_diffusion.hopping._hopping import DeterministicSolverResult
 
 
-@timed
 def _get_deterministic_isf[L: Lattice](
     system: L,
     probabilities: np.ndarray[tuple[int, int], np.dtype[np.float32]],
@@ -25,7 +23,6 @@ def _get_deterministic_isf[L: Lattice](
     return np.abs(np.dot(probabilities, phase_factors))
 
 
-@timed
 def plot_deterministic_isf[L: Lattice](
     system: L,
     result: DeterministicSolverResult,
