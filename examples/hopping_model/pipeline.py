@@ -141,6 +141,7 @@ def loss_fn(
     time_span: TimeSpan,
     delta_k: float,
     test_isfs: jnp.ndarray,
+    test_errors: jnp.ndarray,
 ) -> jax.Array:
     """Loss function for an ISF hopping rate prediction model."""
     print("\nCompile Loss Function\n")
@@ -158,7 +159,15 @@ def loss_fn(
     corrected_isfs = offsets[:, None] * isfs
 
     # For each isf, compare to test isf
-    errors = jnp.sum((corrected_isfs - test_isfs.squeeze(axis=1)) ** 2, axis=-1)
+    # chi_squared_errors = jnp.sum(
+    #     ((corrected_isfs - test_isfs.squeeze(axis=1)) / test_errors.squeeze(axis=1))
+    #     ** 2,
+    #     axis=-1,
+    # )
+    errors = jnp.sum(
+        (corrected_isfs - test_isfs.squeeze(axis=1)) ** 2,
+        axis=-1,
+    )
 
     # Return the average error
     return jnp.mean(errors)
@@ -173,13 +182,18 @@ def training_step(  # ruff: ignore[too-many-arguments]
     time_span: TimeSpan,
     delta_k: float,
     test_isfs: jnp.ndarray,
+    test_errors: jnp.ndarray,
 ) -> tuple[Any, Any, Any]:
     """Progress the training of the model by one epoch by computing loss, gradients and updates."""
     print("\nCompile Training Step")
 
     # Compute loss and gradients for trainable parameters only
     loss, gradients = eqx.filter_value_and_grad(loss_fn)(
-        model, time_span=time_span, delta_k=delta_k, test_isfs=test_isfs
+        model,
+        time_span=time_span,
+        delta_k=delta_k,
+        test_isfs=test_isfs,
+        test_errors=test_errors,
     )
 
     # Calculate parameter updates using Optax
@@ -200,7 +214,7 @@ def get_hopping_time_and_offset(model: ResNet, isf: jnp.ndarray) -> tuple[float,
 
 
 def train_model(
-    training_isfs: jnp.ndarray,
+    training_isfs: tuple[jnp.ndarray, jnp.ndarray],
     *,
     time_span: TimeSpan,
     delta_k: float,
@@ -221,7 +235,7 @@ def train_model(
 
     # Define number of epochs to train for
 
-    num_isfs = len(training_isfs)
+    num_isfs = len(training_isfs[0])
     num_batches = ((num_isfs - 1) // BATCH_SIZE) + 1
 
     # Training loop
@@ -229,7 +243,8 @@ def train_model(
     for epoch in range(NUM_EPOCHS):
         key, subkey = jax.random.split(key)
         permutation = jax.random.permutation(subkey, num_isfs)
-        shuffled_isfs = training_isfs[permutation]
+        shuffled_isfs = training_isfs[0][permutation]
+        shuffled_errors = training_isfs[1][permutation]
 
         # Iterate over batches
         epoch_loss = 0
@@ -237,6 +252,7 @@ def train_model(
             start_index = batch_index * BATCH_SIZE
             end_index = start_index + BATCH_SIZE
             batch_isfs = shuffled_isfs[start_index:end_index]
+            batch_errors = shuffled_errors[start_index:end_index]
 
             model, optimizer_state, loss = training_step(
                 model,
@@ -245,6 +261,7 @@ def train_model(
                 time_span=time_span,
                 delta_k=delta_k,
                 test_isfs=batch_isfs,
+                test_errors=batch_errors,
             )
             epoch_loss += loss
 
@@ -490,6 +507,7 @@ def untrained_test(folderpath: str) -> None:
     print("Output value:", output)
 
 
+# Broken
 def single_clean_test(folderpath: str) -> None:
     """Train and test a model on a single, clean ISF."""
     print("\n\nRunning test with a single, clean isf\n")
@@ -593,11 +611,17 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
     training_isfs = jnp.array(
         [data.get("isf").get("isf") for data in training_isf_data]
     )
+    training_errors = jnp.array(
+        [data.get("isf").get("error") for data in training_isf_data]
+    )
 
     # Train model: train model
     print("Training model")
     trained_model = train_model(
-        training_isfs[:, None, :], time_span=time_span, delta_k=delta_k, resume=resume
+        (training_isfs[:, None, :], training_errors[:, None, :]),
+        time_span=time_span,
+        delta_k=delta_k,
+        resume=resume,
     )
 
     print("\nModel trained! Getting model's isf")
@@ -694,5 +718,5 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
 
 if __name__ == "__main__":
     path = "./examples/data"
-    # single_clean_test(path)
+
     many_equiv_test(path, 20)
