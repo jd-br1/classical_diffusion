@@ -38,7 +38,9 @@ from classical_diffusion.util import timed
 if TYPE_CHECKING:
     from classical_diffusion.langevin import CanonicalSystem
 
-EARLY_STOP = 0.1  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
+EARLY_STOP = 2  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
+NUM_EPOCHS = 100
+BATCH_SIZE = 5
 
 
 class JaxEnsembleResults(TypedDict):
@@ -211,15 +213,13 @@ def train_model(
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     # Define number of epochs to train for
-    num_epochs = 100
-    batch_size = 5
 
     num_isfs = len(training_isfs)
-    num_batches = ((num_isfs - 1) // batch_size) + 1
+    num_batches = ((num_isfs - 1) // BATCH_SIZE) + 1
 
     # Training loop
     losses = []
-    for epoch in range(num_epochs):
+    for epoch in range(NUM_EPOCHS):
         if epoch > 0:
             print(f"Epoch {epoch + 1}")
         key, subkey = jax.random.split(key)
@@ -229,8 +229,8 @@ def train_model(
         # Iterate over batches
         epoch_loss = 0
         for batch_index in range(num_batches):
-            start_index = batch_index * batch_size
-            end_index = start_index + batch_size
+            start_index = batch_index * BATCH_SIZE
+            end_index = start_index + BATCH_SIZE
             batch_isfs = shuffled_isfs[start_index:end_index]
 
             model, optimizer_state, loss = training_step(
