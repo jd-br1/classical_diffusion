@@ -200,14 +200,21 @@ def get_hopping_time_and_offset(model: ResNet, isf: jnp.ndarray) -> tuple[float,
 
 
 def train_model(
-    training_isfs: jnp.ndarray, *, time_span: TimeSpan, delta_k: float
+    training_isfs: jnp.ndarray,
+    *,
+    time_span: TimeSpan,
+    delta_k: float,
+    resume: bool = False,
 ) -> ResNet:
     """Train a ResNet model."""
     # Set up constants
     key = jax.random.key(1)
 
-    # Initialise the model and optimizer
-    model = ResNet(hidden_channels=16, key=key)
+    fresh_model = ResNet(hidden_channels=16, key=key)
+    if resume:
+        model = eqx.tree_deserialise_leaves("model_checkpoint.eqx", fresh_model)
+    else:
+        model = fresh_model
 
     optimizer = optax.adam(learning_rate=1e-3)
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_array))
@@ -220,8 +227,6 @@ def train_model(
     # Training loop
     losses = []
     for epoch in range(NUM_EPOCHS):
-        if epoch > 0:
-            print(f"Epoch {epoch + 1}")
         key, subkey = jax.random.split(key)
         permutation = jax.random.permutation(subkey, num_isfs)
         shuffled_isfs = training_isfs[permutation]
@@ -244,11 +249,15 @@ def train_model(
             epoch_loss += loss
 
         if (epoch + 1) % 10 == 0:
-            print(f"Epoch{epoch + 1:3d} | Loss = {epoch_loss:.5f}")
+            print(f"Epoch {epoch + 1} | Loss = {epoch_loss:.5f}")
+            eqx.tree_serialise_leaves("model_checkpoint.eqx", model)
 
             if losses[-9] - epoch_loss < EARLY_STOP:
                 print("\nminimal improvement: cancelling training")
                 break
+
+        else:
+            print(f"Epoch {epoch + 1}")
 
         losses.append(epoch_loss)
 
@@ -526,7 +535,7 @@ def single_clean_test(folderpath: str) -> None:
     fig.savefig("./examples/hopping_model/model_test_single_clean.isf.pdf")
 
 
-def many_equiv_test(folderpath: str, n_isfs: int) -> None:  # ruff: ignore[too-many-locals]
+def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ruff: ignore[too-many-locals]
     """Train and test a model on n_isfs equivalent but noisy ISFs."""
     print(f"\n\nRunning test with {n_isfs} equivalent isfs\n")
 
@@ -561,7 +570,7 @@ def many_equiv_test(folderpath: str, n_isfs: int) -> None:  # ruff: ignore[too-m
     # Train model: train model
     print("Training model")
     trained_model = train_model(
-        training_isfs[:, None, :], time_span=time_span, delta_k=delta_k
+        training_isfs[:, None, :], time_span=time_span, delta_k=delta_k, resume=resume
     )
 
     print("\nModel trained! Getting model's isf")
@@ -648,4 +657,4 @@ def many_equiv_test(folderpath: str, n_isfs: int) -> None:  # ruff: ignore[too-m
 if __name__ == "__main__":
     path = "./examples/data"
     # single_clean_test(path)
-    many_equiv_test(path, 10)
+    many_equiv_test(path, 20)
