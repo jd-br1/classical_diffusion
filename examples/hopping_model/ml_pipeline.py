@@ -364,7 +364,7 @@ def generate_many_equiv_trajectories(
     traj_filepath: str, n_isfs: int, *, time_span: TimeSpan
 ) -> None:
     """Run the langevin simulations and save to file."""
-    keys = jnp.full(n_isfs, jax.random.key(100))
+    keys = jax.random.split(jax.random.key(100), n_isfs)
 
     batched_trajectories = jax.tree.map(
         np.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
@@ -405,6 +405,7 @@ def generate_isfs(traj_filepath: str, isfs_filepath: str, *, delta_k: float) -> 
         trajectory_records = pickle.load(file)
 
     # Open the isfs file and calculate, then save, the isfs
+    isfs = []
     with Path(isfs_filepath).open("wb") as file:
         for trajectory in trajectory_records:
             times, x_points = trajectory.get("result")
@@ -415,7 +416,27 @@ def generate_isfs(traj_filepath: str, isfs_filepath: str, *, delta_k: float) -> 
                 "parameters": trajectory.get("parameters"),
                 "isf": {"time": times, "isf": isf},
             }
+            isfs.append(isf_record)
             pickle.dump(isf_record, file)
+
+    i = 0
+    for isf_data in isfs:
+        isf = isf_data.get("isf")
+        fig, ax = get_fancy_figure()
+        fig, ax = get_figure(ax)
+        (line1,) = ax.plot(isf.get("time"), isf.get("isf"))  # ty: ignore[invalid-argument-type, unresolved-attribute]
+        line1.set_label("Langevin ISF")
+
+        ax.set_xlabel("Time / s")
+        ax.set_ylabel("ISF")
+
+        ax.set_xlim(0, right=20)
+        ax.set_ylim(0, 1)
+        ax.legend()
+        ax.set_title("Test isfs")
+
+        i += 1
+        fig.savefig(f"./examples/hopping_model/training_isfs/test_{i}.isf.pdf")
 
 
 # Train & Test functions
@@ -593,7 +614,44 @@ def many_equiv_test(folderpath: str, n_isfs: int) -> None:  # ruff: ignore[too-m
     fig.savefig("./examples/hopping_model/model_test_many_equiv.isf.pdf")
 
 
+def working_example() -> None:
+
+    time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
+    delta_k = 0.5
+
+    keys = jax.random.split(jax.random.key(100), 10)
+
+    batched_trajectories = jax.tree.map(
+        np.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
+    )
+    trajectories = [
+        jax.tree.map(operator.itemgetter(i), batched_trajectories) for i in range(10)
+    ]
+
+    i = 0
+    for trajectory in trajectories:
+        times, x_points = trajectory.get("result")
+        isf = get_isf(x_points, (delta_k,))[0]
+        isf = get_measured_data(isf, "real")
+
+        fig, ax = get_fancy_figure()
+        fig, ax = get_figure(ax)
+        (line1,) = ax.plot(times, isf)
+        line1.set_label("Langevin ISF")
+
+        ax.set_xlabel("Time / s")
+        ax.set_ylabel("ISF")
+
+        ax.set_xlim(0, right=20)
+        ax.set_ylim(0, 1)
+        ax.legend()
+        ax.set_title("Test isfs")
+
+        i += 1
+        fig.savefig(f"./examples/hopping_model/training_isfs/test_{i}.isf.pdf")
+
+
 if __name__ == "__main__":
     path = "./examples/data"
     # single_clean_test(path)
-    many_equiv_test(path, 10)
+    working_example()
