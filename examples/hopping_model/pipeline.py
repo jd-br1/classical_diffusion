@@ -38,7 +38,7 @@ from classical_diffusion.util import timed
 if TYPE_CHECKING:
     from classical_diffusion.langevin import CanonicalSystem
 
-EARLY_STOP = 2  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
+EARLY_STOP = 0.1  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 5
 
@@ -114,7 +114,7 @@ class ResNet(eqx.Module):
         x = jnp.mean(x, axis=-1)  # shape = (hidden_channels,)
         x = self.output_layer(x)  # shape = (2,)
 
-        return x.at[1].set(0.5 + 0.5 * jax.nn.tanh(x[1]))
+        return x.at[1].set(1)  # 0.5 + 0.5 * jax.nn.tanh(x[1]))
 
 
 # Model functions
@@ -430,25 +430,44 @@ def generate_random_langevin_trajectories(
 
 
 @timed
-def generate_isfs(traj_filepath: str, isfs_filepath: str, *, delta_k: float) -> None:
+def generate_isfs(
+    traj_filepath: str, isfs_filepath: str, traj_per_isf: int, *, delta_k: float
+) -> None:
     """Generate isfs from trajectories saved in ML pipeline and save to file."""
     # Open the trajectories file and load in the trajectories
     with Path(traj_filepath).open("rb") as file:
         trajectory_records = pickle.load(file)
 
     # Open the isfs file and calculate, then save, the isfs
+    print(len(trajectory_records))
 
     with Path(isfs_filepath).open("wb") as file:
+        isf_trajectories = []
+        counter = 0
         for trajectory in trajectory_records:
-            times, x_points = trajectory.get("result")
-            isf = get_pairwise_isf(x_points, (delta_k,))[0]
-            isf = get_measured_data(isf, "real")
+            print(f"\nCounter: {counter}")
+            if counter < traj_per_isf:
+                times, x_points = trajectory.get("result")
+                isf_trajectories.append(x_points)
+                print(len(isf_trajectories))
+                counter += 1
+            else:
+                isf = get_pairwise_isf(np.array(isf_trajectories), (delta_k,))
 
-            isf_record = {
-                "parameters": trajectory.get("parameters"),
-                "isf": {"time": times, "isf": isf},
-            }
-            pickle.dump(isf_record, file)
+                avg_isf = np.mean(isf, axis=0)
+                sem_isf = np.std(isf, axis=0) / np.sqrt(isf.shape[0])
+
+                avg_data = get_measured_data(avg_isf, "real")[0]
+                sem_data = get_measured_data(sem_isf, "real")[0]
+
+                isf_record = {
+                    "parameters": trajectory.get("parameters"),
+                    "isf": {"time": times, "isf": avg_data, "error": sem_data},
+                }
+                pickle.dump(isf_record, file)
+
+                isf_trajectories = []
+                counter = 0
 
 
 # Train & Test functions
@@ -542,16 +561,24 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
     # Experimental parameters
     time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
     delta_k = 0.5
+    traj_per_isf = 10
 
     # Define filepaths
-    traj_filepath = folderpath + f"/langevin_{n_isfs}_equivalent.pkl"
-    isfs_filepath = folderpath + f"/langevin_{n_isfs}_equivalent_isf.pkl"
+    traj_filepath = folderpath + f"/langevin_{n_isfs * traj_per_isf}_equivalent.pkl"
+    isfs_filepath = (
+        folderpath
+        + f"/langevin_{n_isfs}_equivalent_isf_averaged_over_{traj_per_isf}.pkl"
+    )
 
     # Ensure isfs exist
+    if not Path(traj_filepath).exists():
+        print("No data, generating new equivalent trajectories")
+        generate_many_equiv_trajectories(
+            traj_filepath, n_isfs * traj_per_isf, time_span=time_span
+        )
     if not Path(isfs_filepath).exists():
-        print("No data, generating new equivalent isfs")
-        generate_many_equiv_trajectories(traj_filepath, n_isfs, time_span=time_span)
-        generate_isfs(traj_filepath, isfs_filepath, delta_k=delta_k)
+        print("No isfs, generating new equivalent isfs")
+        generate_isfs(traj_filepath, isfs_filepath, traj_per_isf, delta_k=delta_k)
 
     # Load isfs
     training_isf_data = []
@@ -642,16 +669,27 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
         (line2,) = ax.plot(isf.get("time"), corrected_model_isf)
         line2.set_label("Model ISF")
 
+        fill = ax.fill_between(
+            isf.get("time"),
+            isf.get("isf") - isf.get("error"),
+            isf.get("isf") + isf.get("error"),
+        )
+        fill.set_alpha(0.3)
+        fill.set_color(line1.get_color())
+
         ax.set_xlabel("Time / s")
         ax.set_ylabel("ISF")
 
-        ax.set_xlim(0, right=20)
+        ax.set_xlim(0, right=40)
         ax.set_ylim(-1, 1)
         ax.legend()
         ax.set_title("Model trained on many, tested on random")
 
         i += 1
         fig.savefig(f"./examples/hopping_model/training_isfs/test_{i}.isf.pdf")
+
+        if i == 15:
+            break
 
 
 if __name__ == "__main__":
