@@ -369,7 +369,7 @@ def generate_single_clean_isf(
             omega_barrier=1.0,
             barrier_energy=1.0,
             m=1.0,
-            temperature=0.5,
+            temperature=0.5 / Boltzmann,
             gamma=0.1,
         )
     )
