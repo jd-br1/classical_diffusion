@@ -10,7 +10,7 @@ import numpy as np
 import optax
 from scipy.constants import Boltzmann
 
-from classical_diffusion.analysis import get_isf
+from classical_diffusion.analysis import get_pairwise_isf
 from classical_diffusion.hopping import (
     CanonicalLattice,
     Lattice1D,
@@ -354,7 +354,7 @@ def generate_single_clean_isf(
         initial_conditions=(np.full((500, 1), 0.0), np.full((500, 1), 0.0)),
     )
 
-    isf = get_isf(result.x_points, (delta_k,))
+    isf = get_pairwise_isf(result.x_points, (delta_k,))
     avg_isf = np.mean(isf, axis=0)
 
     print(result.times)
@@ -432,7 +432,7 @@ def generate_isfs(traj_filepath: str, isfs_filepath: str, *, delta_k: float) -> 
     with Path(isfs_filepath).open("wb") as file:
         for trajectory in trajectory_records:
             times, x_points = trajectory.get("result")
-            isf = get_isf(x_points, (delta_k,))[0]
+            isf = get_pairwise_isf(x_points, (delta_k,))[0]
             isf = get_measured_data(isf, "real")
 
             isf_record = {
@@ -552,26 +552,6 @@ def many_equiv_test(folderpath: str, n_isfs: int) -> None:  # ruff: ignore[too-m
                 training_isf_data.append(pickle.load(file))  # ruff: ignore[suspicious-pickle-usage]
             except EOFError:
                 break
-
-    i = 0
-    for data in training_isf_data:
-        isf = data.get("isf")
-
-        fig, ax = get_fancy_figure()
-        fig, ax = get_figure(ax)
-        (line1,) = ax.plot(isf.get("time"), isf.get("isf"))
-        line1.set_label("Langevin ISF")
-
-        ax.set_xlabel("Time / s")
-        ax.set_ylabel("ISF")
-
-        ax.set_xlim(0, right=20)
-        ax.set_ylim(0, 1)
-        ax.legend()
-        ax.set_title("Training ISFs")
-
-        i += 1
-        fig.savefig(f"./examples/hopping_model/training_isfs/test_{i}.isf.pdf")
 
     # Train model: select training data
     training_isfs = jnp.array(
