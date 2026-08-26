@@ -10,13 +10,13 @@ import numpy as np
 import optax
 from scipy.constants import Boltzmann
 
-from classical_diffusion.analysis import get_pairwise_isf
 from classical_diffusion.hopping import (
     CanonicalLattice,
     Lattice1D,
     get_deterministic_isf,
     get_deterministic_probabilities,
 )
+from classical_diffusion.jax import get_measured_data, get_pairwise_isf
 from classical_diffusion.jax.hopping import (
     get_deterministic_isf as get_deterministic_isf_jax,
 )
@@ -31,7 +31,7 @@ from classical_diffusion.jax.langevin import (
     solve_many_overdamped as solve_many_overdamped_jax,
 )
 from classical_diffusion.langevin import solve_many_overdamped
-from classical_diffusion.plot import get_fancy_figure, get_figure, get_measured_data
+from classical_diffusion.plot import get_fancy_figure, get_figure
 from classical_diffusion.simulation import TimeSpan
 from classical_diffusion.util import timed
 
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from classical_diffusion.langevin import CanonicalSystem
 
-EARLY_STOP = 0.1  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
+EARLY_STOP = 10  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 5
 
@@ -445,7 +445,7 @@ def generate_many_langevin_trajectories(
     keys = jax.random.split(jax.random.key(100), n_traj)
 
     batched_trajectories = jax.tree.map(
-        np.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
+        jnp.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
     )
     trajectories = [
         jax.tree.map(operator.itemgetter(i), batched_trajectories)
@@ -466,8 +466,6 @@ def generate_isfs(
         trajectory_records = pickle.load(file)
 
     # Open the isfs file and calculate, then save, the isfs
-    print(len(trajectory_records))
-
     with Path(isfs_filepath).open("wb") as file:
         isf_trajectories = []
         counter = 0
@@ -477,10 +475,12 @@ def generate_isfs(
                 isf_trajectories.append(x_points)
                 counter += 1
             else:
-                isf = get_pairwise_isf(np.array(isf_trajectories), (delta_k,))
+                isf = get_pairwise_isf(
+                    jnp.array(isf_trajectories), jnp.asarray(delta_k)
+                )
 
-                avg_isf = np.mean(isf, axis=0)
-                sem_isf = np.std(isf, axis=0) / np.sqrt(isf.shape[0])
+                avg_isf = jnp.mean(isf, axis=0)
+                sem_isf = jnp.std(isf, axis=0) / np.sqrt(isf.shape[0])
 
                 avg_data = get_measured_data(avg_isf, "real")[0]
                 sem_data = get_measured_data(sem_isf, "real")[0]
