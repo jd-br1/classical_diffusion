@@ -784,6 +784,23 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     jnp.array([data.get("isf").get("error") for data in training_isf_data])
 
 
+def pre_generate_on_gpu(folderpath: str) -> None:
+    """Pre-generate training isfs."""
+    # Experimental parameters
+    time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
+
+    num_trajs = [100, 200, 500, 1000, 5000, 10000, 100000, 1000000]
+
+    for num_traj in num_trajs:
+        traj_filepath = folderpath + f"/langevin_{num_traj}_equivalent.pkl"
+
+        if not Path(traj_filepath).exists():
+            print(f"Generating {num_traj} trajectories")
+            generate_many_langevin_trajectories(
+                traj_filepath, num_traj, time_span=time_span
+            )
+
+
 if __name__ == "__main__":
     path = "./examples/data"
-    many_test(path, 100)
+    pre_generate_on_gpu(path)
