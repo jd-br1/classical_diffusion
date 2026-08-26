@@ -476,7 +476,7 @@ def generate_isfs(
                 counter += 1
             else:
                 isf = get_pairwise_isf(
-                    jnp.array(isf_trajectories), jnp.asarray(delta_k)
+                    jnp.array(isf_trajectories), jnp.asarray((delta_k,))
                 )
 
                 avg_isf = jnp.mean(isf, axis=0)
