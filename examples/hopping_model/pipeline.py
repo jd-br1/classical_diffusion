@@ -1,6 +1,8 @@
 import os
 
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".20"
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".85"
 
 import operator
 import pickle  # ruff: ignore[suspicious-pickle-import]
@@ -44,9 +46,10 @@ if TYPE_CHECKING:
 
     from classical_diffusion.langevin import CanonicalSystem
 
-EARLY_STOP = 10  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
+CHECK_EVERY = 2
+EARLY_STOP = 1  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
-BATCH_SIZE = 5
+BATCH_SIZE = 1
 
 
 class JaxEnsembleResults(TypedDict):
@@ -126,6 +129,7 @@ class ResNet(eqx.Module):
 # Model functions
 
 
+@jax.checkpoint
 @jax.jit
 def get_deterministic_isf_directly(
     hop_time: float, time_span: TimeSpan, delta_k: float
@@ -180,37 +184,6 @@ def loss_fn(
     return jnp.mean(errors)
 
 
-@eqx.filter_jit
-def training_step(  # ruff: ignore[too-many-arguments]
-    model: ResNet,
-    optimizer_state: optax.OptState,
-    optimizer: optax.GradientTransformationExtraArgs,
-    *,
-    time_span: TimeSpan,
-    delta_k: float,
-    test_isfs: jnp.ndarray,
-    test_errors: jnp.ndarray,
-) -> tuple[Any, Any, Any]:
-    """Progress the training of the model by one epoch by computing loss, gradients and updates."""
-    print("\nCompile Training Step")
-
-    # Compute loss and gradients for trainable parameters only
-    loss, gradients = eqx.filter_value_and_grad(loss_fn)(
-        model,
-        time_span=time_span,
-        delta_k=delta_k,
-        test_isfs=test_isfs,
-        test_errors=test_errors,
-    )
-
-    # Calculate parameter updates using Optax
-    updates, optimizer_state = optimizer.update(gradients, optimizer_state, model)  # ty: ignore[invalid-argument-type]
-
-    # Apply updates to the model
-    model = eqx.apply_updates(model, updates)
-    return model, optimizer_state, loss
-
-
 def get_hopping_time_and_offset(model: ResNet, isf: jnp.ndarray) -> tuple[float, float]:
     """Get the hopping time and initial offset from a pre-trained model."""
     outputs = model(isf)
@@ -221,7 +194,7 @@ def get_hopping_time_and_offset(model: ResNet, isf: jnp.ndarray) -> tuple[float,
 
 
 def train_model(
-    training_isfs: tuple[jnp.ndarray, jnp.ndarray],
+    training_data: tuple[jnp.ndarray, jnp.ndarray],
     *,
     time_span: TimeSpan,
     delta_k: float,
@@ -240,53 +213,82 @@ def train_model(
     optimizer = optax.adam(learning_rate=1e-3)
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    # Define number of epochs to train for
+    training_isfs, training_errors = training_data
 
-    num_isfs = len(training_isfs[0])
-    num_batches = ((num_isfs - 1) // BATCH_SIZE) + 1
+    # Define number batches per epoch
+    num_isfs = len(training_isfs)
+    num_batches = num_isfs // BATCH_SIZE
+    usable_len = num_batches * BATCH_SIZE
 
-    # Training loop
+    loss_and_grad_fn = eqx.filter_value_and_grad(loss_fn)
+
+    def batch_step(
+        carry: tuple[eqx.Module, optax.OptState], batch: tuple[jnp.ndarray, jnp.ndarray]
+    ) -> tuple[tuple[eqx.Module, optax.OptState], jnp.ndarray]:
+        model, opt_state = carry
+        batch_isfs, batch_errors = batch
+
+        batch_loss, gradients = loss_and_grad_fn(
+            model,
+            time_span=time_span,
+            delta_k=delta_k,
+            test_isfs=batch_isfs,
+            test_errors=batch_errors,
+        )
+
+        updates, opt_state = optimizer.update(gradients, opt_state)
+
+        model = eqx.apply_updates(model, updates)
+
+        return (model, opt_state), batch_loss
+
+    @eqx.filter_jit
+    def run_epoch(
+        model: eqx.Module,
+        opt_state: optax.OptState,
+        isfs: jnp.ndarray,
+        errors: jnp.ndarray,
+    ) -> tuple[eqx.Module, optax.OptState, jnp.ndarray]:
+        """Run one epoch of ML algorithm."""
+        batched_isfs = isfs[:usable_len].reshape(
+            num_batches, BATCH_SIZE, *isfs.shape[1:]
+        )
+        batched_errors = errors[:usable_len].reshape(
+            num_batches, BATCH_SIZE, *errors.shape[1:]
+        )
+
+        (model, opt_state), batch_losses = jax.lax.scan(
+            batch_step, (model, opt_state), (batched_isfs, batched_errors)
+        )
+
+        return model, opt_state, jnp.sum(batch_losses)
+
+    # Control loop outside jit
     losses = []
     for epoch in range(NUM_EPOCHS):
-        key, subkey = jax.random.split(key)
-        permutation = jax.random.permutation(subkey, num_isfs)
-        shuffled_isfs = training_isfs[0][permutation]
-        shuffled_errors = training_isfs[1][permutation]
+        key, perm_key = jax.random.split(key)
+        permutation = jax.random.permutation(perm_key, num_isfs)
 
-        # Iterate over batches
-        epoch_loss = 0
-        for batch_index in range(num_batches):
-            start_index = batch_index * BATCH_SIZE
-            end_index = start_index + BATCH_SIZE
-            batch_isfs = shuffled_isfs[start_index:end_index]
-            batch_errors = shuffled_errors[start_index:end_index]
+        shuffled_isfs = training_isfs[permutation]
+        shuffled_errors = training_errors[permutation]
 
-            model, optimizer_state, loss = training_step(
-                model,
-                optimizer_state,
-                optimizer,
-                time_span=time_span,
-                delta_k=delta_k,
-                test_isfs=batch_isfs,
-                test_errors=batch_errors,
-            )
-            epoch_loss += loss
+        model, optimizer_state, epoch_loss = run_epoch(
+            model, optimizer_state, shuffled_isfs, shuffled_errors
+        )
+        losses.append(float(epoch_loss))
 
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch + 1} | Loss = {epoch_loss:.5f}")
+        if (epoch + 1) % CHECK_EVERY == 0:
+            print(f"Epoch {epoch + 1:03d} | Loss: {epoch_loss:.5f}")
             eqx.tree_serialise_leaves("model_checkpoint.eqx", model)
-
-            if losses[-9] - epoch_loss < EARLY_STOP:
-                print("\nminimal improvement: cancelling training")
+            print(len(losses))
+            if len(losses) >= CHECK_EVERY and (
+                losses[-CHECK_EVERY] - epoch_loss < EARLY_STOP
+            ):
+                print("Early stopping triggered: plateau reached.")
                 break
 
-        else:
-            print(f"Epoch {epoch + 1}")
-
-        losses.append(epoch_loss)
-
     # Return trained model
-    return model
+    return model  # ty: ignore[invalid-return-type]
 
 
 # Simulation input generator functions
