@@ -36,6 +36,8 @@ from classical_diffusion.simulation import TimeSpan
 from classical_diffusion.util import timed
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from classical_diffusion.langevin import CanonicalSystem
 
 EARLY_STOP = 0.1  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
@@ -159,8 +161,9 @@ def loss_fn(
     corrected_isfs = offsets[:, None] * isfs
 
     # For each isf, compare to test isf
+    # eps = 1e-8
     # chi_squared_errors = jnp.sum(
-    #     ((corrected_isfs - test_isfs.squeeze(axis=1)) / test_errors.squeeze(axis=1))
+    #     ((corrected_isfs - test_isfs.squeeze(axis=1)) / (eps * test_errors.squeeze(axis=1)))
     #     ** 2,
     #     axis=-1,
     # )
@@ -284,7 +287,7 @@ def train_model(
 
 # Simulation input generator functions
 @jax.jit
-def _generate_canonical_kramers_system(
+def _vary_barrier_energy(
     _key: jax.Array,
 ) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
 
@@ -292,6 +295,34 @@ def _generate_canonical_kramers_system(
     omega_well = 1.0
     omega_barrier = 1.0
     barrier_energy = rand.astype(jnp.float32)
+    m = 1.0
+    temperature = 0.5 / Boltzmann
+    gamma = 0.1
+
+    params = (omega_well, omega_barrier, barrier_energy, m, temperature, gamma)
+    system = KramersSystem1D(
+        params=KramersParameters(
+            omega_well=omega_well,
+            omega_barrier=omega_barrier,
+            barrier_energy=barrier_energy,  # ty: ignore[invalid-argument-type]
+            m=m,
+            temperature=temperature,
+            gamma=gamma,
+        )
+    ).as_canonical()
+
+    return params, system  # ty: ignore[invalid-return-type]
+
+
+@jax.jit
+def _vary_omega_well(
+    _key: jax.Array,
+) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
+
+    rand = jax.random.uniform(_key, shape=(), minval=0.25, maxval=3.25)
+    omega_well = rand.astype(jnp.float32)
+    omega_barrier = 1.0
+    barrier_energy = 3.0
     m = 1.0
     temperature = 0.5 / Boltzmann
     gamma = 0.1
@@ -328,6 +359,7 @@ def run_langevin_trajectories(
     *,
     time_span: TimeSpan,
     keys: jax.Array,
+    generate_params: "Callable[        [jax.Array],        tuple[tuple[float, float, float, float, float, float], CanonicalSystem],    ]" = _vary_barrier_energy,  # ruff: ignore[quoted-annotation]
 ) -> JaxEnsembleResults:
     """Run langevin trajectories."""
 
@@ -335,7 +367,7 @@ def run_langevin_trajectories(
 
         param_key, cond_key, sim_key = jax.random.split(_key, 3)
 
-        params, system = _generate_canonical_kramers_system(param_key)
+        params, system = generate_params(param_key)
 
         initial_conditions = _inits_constant(cond_key)
 
@@ -383,9 +415,6 @@ def generate_single_clean_isf(
     isf = get_pairwise_isf(result.x_points, (delta_k,))
     avg_isf = np.mean(isf, axis=0)
 
-    print(result.times)
-    print(avg_isf)
-
     clean_isf_path = folderpath + "/langevin_clean_isf.pkl"
     with Path(clean_isf_path).open("wb") as file:
         real_isf = get_measured_data(avg_isf, "real")
@@ -409,7 +438,7 @@ def generate_single_clean_isf(
 
 
 @timed
-def generate_many_equiv_trajectories(
+def generate_many_langevin_trajectories(
     traj_filepath: str, n_traj: int, *, time_span: TimeSpan
 ) -> None:
     """Run the langevin simulations and save to file."""
@@ -421,25 +450,6 @@ def generate_many_equiv_trajectories(
     trajectories = [
         jax.tree.map(operator.itemgetter(i), batched_trajectories)
         for i in range(n_traj)
-    ]
-
-    with Path(traj_filepath).open("wb") as file:
-        pickle.dump(trajectories, file)
-
-
-@timed
-def generate_random_langevin_trajectories(
-    traj_filepath: str, n_isfs: int, *, time_span: TimeSpan
-) -> None:
-    """Run the langevin simulations and save to file."""
-    keys = jax.random.split(jax.random.key(100), n_isfs)
-
-    batched_trajectories = jax.tree.map(
-        np.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
-    )
-    trajectories = [
-        jax.tree.map(operator.itemgetter(i), batched_trajectories)
-        for i in range(n_isfs)
     ]
 
     with Path(traj_filepath).open("wb") as file:
@@ -462,11 +472,9 @@ def generate_isfs(
         isf_trajectories = []
         counter = 0
         for trajectory in trajectory_records:
-            print(f"\nCounter: {counter}")
             if counter < traj_per_isf:
                 times, x_points = trajectory.get("result")
                 isf_trajectories.append(x_points)
-                print(len(isf_trajectories))
                 counter += 1
             else:
                 isf = get_pairwise_isf(np.array(isf_trajectories), (delta_k,))
@@ -572,7 +580,7 @@ def single_clean_test(folderpath: str) -> None:
     fig.savefig("./examples/hopping_model/model_test_single_clean.isf.pdf")
 
 
-def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ruff: ignore[too-many-locals]
+def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ruff: ignore[too-many-locals, too-many-statements]
     """Train and test a model on n_isfs equivalent but noisy ISFs."""
     print(f"\n\nRunning test with {n_isfs} equivalent isfs\n")
 
@@ -591,7 +599,7 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
     # Ensure isfs exist
     if not Path(traj_filepath).exists():
         print("No data, generating new equivalent trajectories")
-        generate_many_equiv_trajectories(
+        generate_many_langevin_trajectories(
             traj_filepath, n_isfs * traj_per_isf, time_span=time_span
         )
     if not Path(isfs_filepath).exists():
@@ -716,7 +724,46 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
             break
 
 
+def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
+    """Train a model on a range of omega_well values and correlate ."""
+    print("\n\nRunning kamers rate theory\n")
+
+    # Experimental parameters
+    time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
+    delta_k = 0.5
+    traj_per_isf = 10
+
+    # Define filepaths
+    traj_filepath = folderpath + f"/langevin_{n_isfs * traj_per_isf}_equivalent.pkl"
+    isfs_filepath = (
+        folderpath
+        + f"/langevin_{n_isfs}_equivalent_isf_averaged_over_{traj_per_isf}.pkl"
+    )
+
+    # Ensure isfs exist
+    if not Path(traj_filepath).exists():
+        print("No data, generating new equivalent trajectories")
+        generate_many_langevin_trajectories(
+            traj_filepath, n_isfs * traj_per_isf, time_span=time_span
+        )
+    if not Path(isfs_filepath).exists():
+        print("No isfs, generating new equivalent isfs")
+        generate_isfs(traj_filepath, isfs_filepath, traj_per_isf, delta_k=delta_k)
+
+    # Load isfs
+    training_isf_data = []
+    with Path(isfs_filepath).open("rb") as file:
+        while True:
+            try:
+                training_isf_data.append(pickle.load(file))  # ruff: ignore[suspicious-pickle-usage]
+            except EOFError:
+                break
+
+    # Train model: select training data
+    jnp.array([data.get("isf").get("isf") for data in training_isf_data])
+    jnp.array([data.get("isf").get("error") for data in training_isf_data])
+
+
 if __name__ == "__main__":
     path = "./examples/data"
-
-    many_equiv_test(path, 20)
+    many_test(path, 20)
