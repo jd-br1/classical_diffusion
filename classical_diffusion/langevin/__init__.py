@@ -12,6 +12,10 @@ from classical_diffusion.langevin._analysis import (
     plot_x_distribution_histogram,
     plot_x_distribution_kde,
 )
+from classical_diffusion.langevin._experimental_systems import (
+    SODIUM_COPPER_SYSTEM_1D,
+    SODIUM_COPPER_SYSTEM_2D,
+)
 from classical_diffusion.langevin._langevin import (
     LangevinSimulationResult,
     SingleLangevinSimulationResult,
@@ -24,7 +28,9 @@ from classical_diffusion.langevin._langevin import (
     solve_single,
     solve_single_ballistic,
 )
-from classical_diffusion.langevin._sample import get_random_initial_conditions
+from classical_diffusion.langevin._langevin import (
+    get_random_initial_conditions_ext as get_random_initial_conditions,
+)
 from classical_diffusion.langevin._system import (
     CanonicalSystem,
     HarmonicSystem,
@@ -51,6 +57,8 @@ from classical_diffusion.langevin._system_analysis import (
 )
 
 __all__ = [
+    "SODIUM_COPPER_SYSTEM_1D",
+    "SODIUM_COPPER_SYSTEM_2D",
     "CanonicalSystem",
     "HarmonicSystem",
     "KramersSystem1D",
