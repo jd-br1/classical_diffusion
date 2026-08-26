@@ -1,3 +1,7 @@
+import os
+
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".20"
+
 import operator
 import pickle  # ruff: ignore[suspicious-pickle-import]
 from pathlib import Path
@@ -330,9 +334,9 @@ def _vary_omega_well(
     params = (omega_well, omega_barrier, barrier_energy, m, temperature, gamma)
     system = KramersSystem1D(
         params=KramersParameters(
-            omega_well=omega_well,
+            omega_well=omega_well,  # ty: ignore[invalid-argument-type]
             omega_barrier=omega_barrier,
-            barrier_energy=barrier_energy,  # ty: ignore[invalid-argument-type]
+            barrier_energy=barrier_energy,
             m=m,
             temperature=temperature,
             gamma=gamma,
@@ -379,10 +383,10 @@ def run_langevin_trajectories(
         )
 
         return {
-            "parameters": params,
+            "parameters": params,  # ty: ignore[invalid-argument-type]
             "initial_conditions": initial_conditions,
             "result": (times, positions),
-        }
+        }  # ty: ignore[invalid-return-type]
 
     return jax.vmap(body, (None, 0))(time_span, keys)
 
@@ -444,16 +448,14 @@ def generate_many_langevin_trajectories(
     """Run the langevin simulations and save to file."""
     keys = jax.random.split(jax.random.key(100), n_traj)
 
+    # Transfer batched array directly from GPU to CPU as contiguous blocks
     batched_trajectories = jax.tree.map(
         jnp.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
     )
-    trajectories = [
-        jax.tree.map(operator.itemgetter(i), batched_trajectories)
-        for i in range(n_traj)
-    ]
 
+    # Save directly without slicing into 10,000 Python objects
     with Path(traj_filepath).open("wb") as file:
-        pickle.dump(trajectories, file)
+        pickle.dump(batched_trajectories, file, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 @timed
@@ -463,36 +465,31 @@ def generate_isfs(
     """Generate isfs from trajectories saved in ML pipeline and save to file."""
     # Open the trajectories file and load in the trajectories
     with Path(traj_filepath).open("rb") as file:
-        trajectory_records = pickle.load(file)
+        batched = pickle.load(file)
+
+    times_all, x_points_all = batched["result"]
+    parameters_all = batched["parameters"]
+    n_traj = x_points_all.shape[0]
 
     # Open the isfs file and calculate, then save, the isfs
     with Path(isfs_filepath).open("wb") as file:
-        isf_trajectories = []
-        counter = 0
-        for trajectory in trajectory_records:
-            if counter < traj_per_isf:
-                times, x_points = trajectory.get("result")
-                isf_trajectories.append(x_points)
-                counter += 1
-            else:
-                isf = get_pairwise_isf(
-                    jnp.array(isf_trajectories), jnp.asarray((delta_k,))
-                )
+        for i in range(0, n_traj, traj_per_isf):
+            x_chunk = x_points_all[i : i + traj_per_isf]
+            times = times_all[i]
+            params = jax.tree.map(operator.itemgetter(i), parameters_all)
 
-                avg_isf = jnp.mean(isf, axis=0)
-                sem_isf = jnp.std(isf, axis=0) / np.sqrt(isf.shape[0])
+            isf = get_pairwise_isf(jnp.array(x_chunk), jnp.asarray((delta_k,)))
+            avg_isf = jnp.mean(isf, axis=0)
+            sem_isf = jnp.std(isf, axis=0) / np.sqrt(isf.shape[0])
 
-                avg_data = get_measured_data(avg_isf, "real")[0]
-                sem_data = get_measured_data(sem_isf, "real")[0]
+            avg_data = get_measured_data(avg_isf, "real")[0]
+            sem_data = get_measured_data(sem_isf, "real")[0]
 
-                isf_record = {
-                    "parameters": trajectory.get("parameters"),
-                    "isf": {"time": times, "isf": avg_data, "error": sem_data},
-                }
-                pickle.dump(isf_record, file)
-
-                isf_trajectories = []
-                counter = 0
+            isf_record = {
+                "parameters": params,
+                "isf": {"time": times, "isf": avg_data, "error": sem_data},
+            }
+            pickle.dump(isf_record, file)
 
 
 # Train & Test functions
@@ -766,4 +763,4 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
 
 if __name__ == "__main__":
     path = "./examples/data"
-    many_test(path, 20)
+    many_test(path, 10)
