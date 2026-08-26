@@ -1,16 +1,5 @@
 import os
 
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".85"
-
-import operator
-import pickle  # ruff: ignore[suspicious-pickle-import]
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
-
-import equinox as eqx
-import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
@@ -41,15 +30,31 @@ from classical_diffusion.plot import get_fancy_figure, get_figure
 from classical_diffusion.simulation import TimeSpan
 from classical_diffusion.util import timed
 
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".85"
+
+import operator
+import pickle  # ruff: ignore[suspicious-pickle-import]
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypedDict
+
+import equinox as eqx
+import jax
+
+jax.config.update("jax_enable_x64", False)
+
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from classical_diffusion.langevin import CanonicalSystem
 
 CHECK_EVERY = 2
-EARLY_STOP = 1  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
+EARLY_STOP = 0.1  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
-BATCH_SIZE = 1
+BATCH_SIZE = 16  # Number of isfs to test on at a time (does this need to be limited?)
+LOSS_BATCH_SIZE = 8  # Number of isfs to calculate loss of at a time
 
 
 class JaxEnsembleResults(TypedDict):
@@ -155,18 +160,32 @@ def loss_fn(
 ) -> jax.Array:
     """Loss function for an ISF hopping rate prediction model."""
     print("\nCompile Loss Function\n")
+
     # Pass batched isfs through the model to predict hopping rates and isf offsets
     predictions = jax.vmap(model)(test_isfs)  # ty: ignore[invalid-argument-type]
-
-    # For each prediction, generate an isf
     hopping_times = predictions[:, 0]
     offsets = predictions[:, 1]
 
-    isfs = jax.vmap(get_deterministic_isf_directly, (0, None, None))(
-        hopping_times, time_span, delta_k
-    )  # These are already real
+    total_samples = hopping_times.shape[0]
+    num_chunks = total_samples // LOSS_BATCH_SIZE
+    usable_samples = num_chunks * LOSS_BATCH_SIZE
 
-    corrected_isfs = offsets[:, None] * isfs
+    hop_time_chunks = hopping_times[:usable_samples].reshape(
+        num_chunks, LOSS_BATCH_SIZE
+    )
+
+    # Parallel evaluation inside each batch via vmap
+    def _process_loss_batch(hop_time_chunk: jnp.ndarray) -> jnp.ndarray:
+        return jax.vmap(get_deterministic_isf_directly, (0, None, None))(
+            hop_time_chunk, time_span, delta_k
+        )
+
+    # Sequential execution over micro-batches via lax.map
+    isfs = jax.lax.map(_process_loss_batch, hop_time_chunks)
+    isfs = isfs.reshape(usable_samples, -1)
+
+    corrected_isfs = offsets[:usable_samples, None] * isfs
+    targets = test_isfs[:usable_samples].squeeze(axis=1)
 
     # For each isf, compare to test isf
     # eps = 1e-8
@@ -176,7 +195,7 @@ def loss_fn(
     #     axis=-1,
     # )
     errors = jnp.sum(
-        (corrected_isfs - test_isfs.squeeze(axis=1)) ** 2,
+        (corrected_isfs - targets) ** 2,
         axis=-1,
     )
 
@@ -280,9 +299,11 @@ def train_model(
         if (epoch + 1) % CHECK_EVERY == 0:
             print(f"Epoch {epoch + 1:03d} | Loss: {epoch_loss:.5f}")
             eqx.tree_serialise_leaves("model_checkpoint.eqx", model)
-            print(len(losses))
-            if len(losses) >= CHECK_EVERY and (
-                losses[-CHECK_EVERY] - epoch_loss < EARLY_STOP
+            loss_difference = losses[-CHECK_EVERY] - epoch_loss
+            if (
+                len(losses) >= CHECK_EVERY
+                and loss_difference >= 0
+                and loss_difference < EARLY_STOP
             ):
                 print("Early stopping triggered: plateau reached.")
                 break
@@ -765,4 +786,4 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
 
 if __name__ == "__main__":
     path = "./examples/data"
-    many_test(path, 10)
+    many_test(path, 100)
