@@ -202,10 +202,12 @@ def loss_fn(
     return jnp.mean(errors)
 
 
-def get_hopping_time_and_offset(model: ResNet, isf: jnp.ndarray) -> tuple[float, float]:
+def get_hopping_time_and_offset(
+    model: ResNet, isf: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Get the hopping time and initial offset from a pre-trained model."""
     outputs = model(isf)
-    return float(outputs[0]), float(outputs[1])
+    return outputs[0], outputs[1]
 
 
 # Training functions
@@ -345,7 +347,7 @@ def _vary_omega_well(
     _key: jax.Array,
 ) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
 
-    rand = jax.random.uniform(_key, shape=(), minval=0.25, maxval=3.25)
+    rand = jax.random.uniform(_key, shape=(), minval=0.25, maxval=5.25)
     omega_well = rand.astype(jnp.float32)
     omega_barrier = 1.0
     barrier_energy = 3.0
@@ -380,12 +382,12 @@ def _inits_constant(
 
 
 # jax simulation run
-@jax.jit
+@eqx.filter_jit
 def run_langevin_trajectories(
     *,
     time_span: TimeSpan,
     keys: jax.Array,
-    generate_params: "Callable[        [jax.Array],        tuple[tuple[float, float, float, float, float, float], CanonicalSystem],    ]" = _vary_barrier_energy,  # ruff: ignore[quoted-annotation]
+    generate_params: "Callable[        [jax.Array],        tuple[tuple[float, float, float, float, float, float], CanonicalSystem],    ]",  # ruff: ignore[quoted-annotation]
 ) -> JaxEnsembleResults:
     """Run langevin trajectories."""
 
@@ -444,12 +446,12 @@ def generate_single_clean_isf(
         _key=jax.random.key(33),
     )
 
-    isf = get_pairwise_isf(x_points, jnp.asarray((delta_k,)))[0]
+    isf = get_pairwise_isf(x_points, jnp.asarray((delta_k,)))
     avg_isf = jnp.mean(isf, axis=0)
     sem_isf = jnp.std(isf, axis=0) / np.sqrt(isf.shape[0])
 
-    avg_data = get_measured_data(avg_isf, "real")[0]
-    sem_data = get_measured_data(sem_isf, "real")[0]
+    avg_data = get_measured_data(avg_isf, "real")
+    sem_data = get_measured_data(sem_isf, "real")
 
     clean_isf_path = folderpath + "/langevin_clean_isf.pkl"
     with Path(clean_isf_path).open("wb") as file:
@@ -474,14 +476,21 @@ def generate_single_clean_isf(
 
 @timed
 def generate_many_langevin_trajectories(
-    traj_filepath: str, n_traj: int, *, time_span: TimeSpan
+    traj_filepath: str,
+    n_traj: int,
+    *,
+    time_span: TimeSpan,
+    generate_params: "Callable[        [jax.Array],        tuple[tuple[float, float, float, float, float, float], CanonicalSystem],    ]" = _vary_barrier_energy,  # ruff: ignore[quoted-annotation]
 ) -> None:
     """Run the langevin simulations and save to file."""
     keys = jax.random.split(jax.random.key(100), n_traj)
 
     # Transfer batched array directly from GPU to CPU as contiguous blocks
     batched_trajectories = jax.tree.map(
-        jnp.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
+        jnp.asarray,
+        run_langevin_trajectories(
+            time_span=time_span, keys=keys, generate_params=generate_params
+        ),
     )
 
     # Save directly without slicing into 10,000 Python objects
@@ -581,6 +590,8 @@ def single_clean_test(folderpath: str) -> None:
     hopping_time, offset = get_hopping_time_and_offset(
         trained_model, training_isf[None, :]
     )
+    hopping_time = float(hopping_time)
+    offset = float(offset)
 
     predicted_lattice = Lattice1D(1.0, hopping_time)
     model_isf = get_deterministic_isf(
@@ -681,6 +692,8 @@ def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ru
     hopping_time, offset = get_hopping_time_and_offset(
         trained_model, jnp.array([test_isf.get("isf")])
     )
+    hopping_time = float(hopping_time)
+    offset = float(offset)
 
     predicted_lattice = Lattice1D(1.0, hopping_time)
     model_isf = get_deterministic_isf(
@@ -715,6 +728,8 @@ def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ru
         hopping_time, offset = get_hopping_time_and_offset(
             trained_model, jnp.array([isf.get("isf")])
         )
+        hopping_time = float(hopping_time)
+        offset = float(offset)
 
         predicted_lattice = Lattice1D(1.0, hopping_time)
         model_isf = get_deterministic_isf(
@@ -762,38 +777,156 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     # Experimental parameters
     time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
     delta_k = 0.5
+
+    # Test parameters
     traj_per_isf = 10
-    isf
+    n_parameter_data_points = 50
+    # 9 training isfs per test isf
+    n_isfs = 10 * n_parameter_data_points
 
     # Define filepaths
-    traj_filepath = folderpath + f"/langevin_{n_isfs * traj_per_isf}_equivalent.pkl"
+    traj_filepath = (
+        folderpath
+        + f"/vary_omega_well/langevin_{n_isfs * traj_per_isf}_trajectories.pkl"
+    )
+    Path(traj_filepath).parent.mkdir(parents=True, exist_ok=True)
     isfs_filepath = (
         folderpath
-        + f"/langevin_{n_isfs}_equivalent_isf_averaged_over_{traj_per_isf}.pkl"
+        + f"/vary_omega_well/langevin_{n_isfs}_isf_averaged_over_{traj_per_isf}.pkl"
     )
 
     # Ensure isfs exist
     if not Path(traj_filepath).exists():
-        print("No data, generating new equivalent trajectories")
+        print(f"No data, generating {n_isfs * traj_per_isf} equivalent trajectories")
         generate_many_langevin_trajectories(
-            traj_filepath, n_isfs * traj_per_isf, time_span=time_span
+            traj_filepath,
+            n_isfs * traj_per_isf,
+            time_span=time_span,
+            generate_params=_vary_omega_well,
         )
     if not Path(isfs_filepath).exists():
         print("No isfs, generating new equivalent isfs")
         generate_isfs(traj_filepath, isfs_filepath, traj_per_isf, delta_k=delta_k)
 
     # Load isfs
-    training_isf_data = []
+    generated_isf_data = []
     with Path(isfs_filepath).open("rb") as file:
         while True:
             try:
-                training_isf_data.append(pickle.load(file))  # ruff: ignore[suspicious-pickle-usage]
+                generated_isf_data.append(pickle.load(file))  # ruff: ignore[suspicious-pickle-usage]
             except EOFError:
                 break
 
+    @timed
+    def split_isfs_by_omega_well(
+        generated_isf_data: list[dict], n: int
+    ) -> tuple[list[dict], list[dict]]:
+        total_len = len(generated_isf_data)
+
+        # Sort isfs by parameter of interest: omega_well
+        omega_well_values = jnp.array(
+            [data["parameters"][0] for data in generated_isf_data]
+        )
+
+        sorted_indices = jnp.argsort(omega_well_values)
+        sorted_omega = omega_well_values[sorted_indices]
+
+        targets = jnp.linspace(sorted_omega[0], sorted_omega[-1], n)
+        target_positions = jnp.searchsorted(sorted_omega, targets)
+        target_positions = jnp.clip(target_positions, 0, total_len - 1)
+
+        selected_indices = np.asarray(sorted_indices[target_positions])
+
+        is_test = np.zeros(total_len, dtype=bool)
+        is_test[selected_indices] = True
+
+        test_list = [
+            i for i, in_test in zip(generated_isf_data, is_test, strict=True) if in_test
+        ]
+        training_list = [
+            i
+            for i, in_test in zip(generated_isf_data, is_test, strict=True)
+            if not in_test
+        ]
+
+        return test_list, training_list
+
+    print("\nSplitting isfs into training and evenly spaced test set")
+    test_list, training_list = split_isfs_by_omega_well(
+        generated_isf_data, n_parameter_data_points
+    )
+
     # Train model: select training data
-    jnp.array([data.get("isf").get("isf") for data in training_isf_data])
-    jnp.array([data.get("isf").get("error") for data in training_isf_data])
+    training_isfs = jnp.array([data["isf"]["isf"] for data in training_list])
+    training_errors = jnp.array([data["isf"]["error"] for data in training_list])
+
+    print("\nTraining model")
+    trained_model = train_model(
+        (training_isfs[:, None, :], training_errors[:, None, :]),
+        time_span=time_span,
+        delta_k=delta_k,
+        resume=resume,
+    )
+
+    print("\nModel trained! Testing on test data")
+    test_isfs = jnp.array([data["isf"]["isf"] for data in test_list])
+
+    # Test model: get model output
+    hopping_times, _ = jax.vmap(get_hopping_time_and_offset, (None, 0))(
+        trained_model, test_isfs[:, None, :]
+    )
+    hopping_rate = 1.0 / hopping_times
+    omega_wells = jnp.array([data["parameters"][0] for data in test_list])
+
+    # Plot one isf to check model is reasonable
+    isf_0 = test_list[0]["isf"]
+    times = isf_0["time"]
+    isf = isf_0["isf"]
+    hopping_time = hopping_times[0]
+    hopping_time = float(hopping_time)
+
+    predicted_lattice = Lattice1D(1.0, hopping_time)
+    model_isf = get_deterministic_isf(
+        get_deterministic_probabilities(predicted_lattice, (1000,), time_span),
+        (delta_k,),
+    )
+
+    fig, ax = get_fancy_figure()
+    fig, ax = get_figure(ax)
+    (line1,) = ax.plot(times, isf)
+    line1.set_label("Langevin ISF")
+
+    (line2,) = ax.plot(times, model_isf)
+    line2.set_label("Model ISF")
+
+    ax.set_xlabel("Time / s")
+    ax.set_ylabel("ISF")
+
+    ax.set_xlim(0, right=40)
+    ax.set_ylim(-1, 1)
+    ax.legend()
+    ax.set_title("Model trained on kramers variation, tested")
+
+    fig.savefig("./examples/hopping_model/training_isfs/kramers_test.isf.pdf")
+
+    # Plot hopping rate against omega_well
+    print("Plot Kramers stuff")
+    fig, ax = get_fancy_figure()
+    fig, ax = get_figure(ax)
+    (line1,) = ax.plot(omega_wells, hopping_rate)
+    line1.set_label("Rate against omega_well")
+
+    ax.set_xlabel("Omega well")
+    ax.set_ylabel("Hopping rate")
+
+    ax.set_xlim(0, right=20)
+    ax.set_ylim(0, 1)
+    ax.legend()
+    ax.set_title("Kramers")
+
+    fig.savefig("./examples/hopping_model/kramers.linear.pdf")
+
+    print(hopping_times)
 
 
 def pre_generate_on_gpu(folderpath: str) -> None:
@@ -815,4 +948,5 @@ def pre_generate_on_gpu(folderpath: str) -> None:
 
 if __name__ == "__main__":
     path = "./examples/data"
-    single_clean_test(path)
+    # many_test(path, 20)
+    kramers_rate_plot_test(path)
