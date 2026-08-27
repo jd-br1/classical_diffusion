@@ -25,7 +25,6 @@ from classical_diffusion.jax.langevin import (
 from classical_diffusion.jax.langevin import (
     solve_many_overdamped as solve_many_overdamped_jax,
 )
-from classical_diffusion.langevin import solve_many_overdamped
 from classical_diffusion.plot import get_fancy_figure, get_figure
 from classical_diffusion.simulation import TimeSpan
 from classical_diffusion.util import timed
@@ -417,40 +416,49 @@ def run_langevin_trajectories(
 # Training data generation functions
 
 
+default_params = KramersParameters(
+    omega_well=1.0,
+    omega_barrier=1.0,
+    barrier_energy=1.0,
+    m=1.0,
+    temperature=0.5 / Boltzmann,
+    gamma=0.1,
+)
+
+
 @timed
 def generate_single_clean_isf(
-    folderpath: str, *, time_span: TimeSpan, delta_k: float
+    folderpath: str,
+    *,
+    time_span: TimeSpan,
+    delta_k: float,
+    params: KramersParameters = default_params,
 ) -> None:
     """Run a langevin ensemble and save the resulting clean isf to file."""
-    system = KramersSystem1D(
-        params=KramersParameters(
-            omega_well=1.0,
-            omega_barrier=1.0,
-            barrier_energy=1.0,
-            m=1.0,
-            temperature=0.5 / Boltzmann,
-            gamma=0.1,
-        )
-    )
+    system = KramersSystem1D(params=params).as_canonical()
 
-    result = solve_many_overdamped(
+    times, x_points, _ = solve_many_overdamped_jax(
         system,
         time_span,
-        initial_conditions=(np.full((500, 1), 0.0), np.full((500, 1), 0.0)),
+        initial_conditions=(jnp.full((500, 1), 0.0), jnp.full((500, 1), 0.0)),
+        _key=jax.random.key(33),
     )
 
-    isf = get_pairwise_isf(result.x_points, (delta_k,))
-    avg_isf = np.mean(isf, axis=0)
+    isf = get_pairwise_isf(x_points, jnp.asarray((delta_k,)))[0]
+    avg_isf = jnp.mean(isf, axis=0)
+    sem_isf = jnp.std(isf, axis=0) / np.sqrt(isf.shape[0])
+
+    avg_data = get_measured_data(avg_isf, "real")[0]
+    sem_data = get_measured_data(sem_isf, "real")[0]
 
     clean_isf_path = folderpath + "/langevin_clean_isf.pkl"
     with Path(clean_isf_path).open("wb") as file:
-        real_isf = get_measured_data(avg_isf, "real")
-        isf_record = {"time": result.times, "isf": real_isf}
+        isf_record = {"time": times, "isf": avg_data, "error": sem_data}
         pickle.dump(isf_record, file)
 
     fig, ax = get_fancy_figure()
     fig, ax = get_figure(ax)
-    (line,) = ax.plot(result.times, real_isf)
+    (line,) = ax.plot(times, avg_data)
     line.set_label("ISF")
 
     ax.set_xlabel("Time / s")
@@ -558,10 +566,13 @@ def single_clean_test(folderpath: str) -> None:
 
     # Train model on clean isf
     training_isf = jnp.array(clean_isf.get("isf"))
+    training_error = jnp.array(clean_isf.get("error"))
 
     print("Training model")
     trained_model = train_model(
-        training_isf[None, None, :], time_span=time_span, delta_k=delta_k
+        (training_isf[None, None, :], training_error[None, None, :]),
+        time_span=time_span,
+        delta_k=delta_k,
     )
 
     print("\nModel trained! Getting model's isf")
@@ -752,6 +763,7 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
     delta_k = 0.5
     traj_per_isf = 10
+    isf
 
     # Define filepaths
     traj_filepath = folderpath + f"/langevin_{n_isfs * traj_per_isf}_equivalent.pkl"
@@ -803,4 +815,4 @@ def pre_generate_on_gpu(folderpath: str) -> None:
 
 if __name__ == "__main__":
     path = "./examples/data"
-    pre_generate_on_gpu(path)
+    single_clean_test(path)
