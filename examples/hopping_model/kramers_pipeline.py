@@ -122,7 +122,7 @@ class ResNet(eqx.Module):
         x = self.residual_block(x)  # shape = (hidden_dim,)
         x = self.output_layer(x)  # shape = (2,)
 
-        hop_time = abs(x[0]) + 1e-4
+        hop_time = jnp.exp(x[0]) + 1e-4
         offset = 1.0
         return jnp.array([hop_time, offset])
 
@@ -181,11 +181,12 @@ def loss_fn(
     isfs = isfs.reshape(usable_samples, -1)
 
     corrected_isfs = offsets[:usable_samples, None] * isfs
+    temp_corrected_isfs = (corrected_isfs * 0.5) + 0.5
     targets = test_isfs[:usable_samples]
 
     # Calculate the error by
     errors = jnp.sum(
-        (corrected_isfs - targets) ** 2,
+        (temp_corrected_isfs - targets) ** 2,
         axis=-1,
     )
 
@@ -869,36 +870,39 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     hopping_rate = 1.0 / hopping_times
     omega_wells = jnp.array([data["parameters"][0] for data in test_list])
 
-    # Plot one isf to check model is reasonable
-    isf_0 = test_list[0]["isf"]
-    times = isf_0["time"]
-    isf = isf_0["isf"]
-    hopping_time = hopping_times[0]
-    hopping_time = float(hopping_time)
+    i = 0
+    times = test_list[0]["isf"]["time"]
+    for i in range(len(test_list)):
+        isf = test_list[i]["isf"]["isf"]
+        hopping_time = hopping_times[i]
+        predicted_lattice = Lattice1D(1.0, float(hopping_time))
+        model_isf = get_deterministic_isf(
+            get_deterministic_probabilities(predicted_lattice, (1000,), time_span),
+            (delta_k,),
+        )
+        temp_isf = (model_isf * 0.5) + 0.5
 
-    predicted_lattice = Lattice1D(1.0, hopping_time)
-    model_isf = get_deterministic_isf(
-        get_deterministic_probabilities(predicted_lattice, (1000,), time_span),
-        (delta_k,),
-    )
+        fig, ax = get_fancy_figure()
+        fig, ax = get_figure(ax)
+        (line1,) = ax.plot(times, isf)
+        line1.set_label("Langevin ISF")
 
-    fig, ax = get_fancy_figure()
-    fig, ax = get_figure(ax)
-    (line1,) = ax.plot(times, isf)
-    line1.set_label("Langevin ISF")
+        (line2,) = ax.plot(times, temp_isf)
+        line2.set_label("Model ISF")
 
-    (line2,) = ax.plot(times, model_isf)
-    line2.set_label("Model ISF")
+        ax.set_xlabel("Time / s")
+        ax.set_ylabel("ISF")
 
-    ax.set_xlabel("Time / s")
-    ax.set_ylabel("ISF")
+        ax.set_xlim(0, right=40)
+        ax.set_ylim(-1, 1)
+        ax.legend()
+        ax.set_title("Kramers model test")
 
-    ax.set_xlim(0, right=40)
-    ax.set_ylim(-1, 1)
-    ax.legend()
-    ax.set_title("Model trained on kramers variation, tested")
+        i += 1
+        fig.savefig(f"./examples/hopping_model/training_isfs/kramers_test_{i}.isf.pdf")
 
-    fig.savefig("./examples/hopping_model/training_isfs/kramers_test.isf.pdf")
+        if i == 15:
+            break
 
     # Plot hopping rate against omega_well
     print("Plot Kramers stuff")

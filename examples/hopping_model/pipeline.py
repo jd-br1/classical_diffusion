@@ -124,7 +124,7 @@ class ResNet(eqx.Module):
         x = jax.nn.relu(self.input_layer(x))  # shape = (hidden_channels, n_time_steps)
         x = self.residual_block(x)  # shape = (hidden_channels, n_time_steps)
 
-        x = x.reshape(-1)  # shape = (hidden_channels,)
+        x = jnp.mean(x, axis=-1)  # shape = (hidden_channels,)
         x = self.output_layer(x)  # shape = (2,)
 
         return x.at[1].set(1)  # 0.5 + 0.5 * jax.nn.tanh(x[1]))
@@ -230,7 +230,6 @@ def train_model(
     else:
         model = fresh_model
 
-    # try optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(1e-3))
     optimizer = optax.adam(learning_rate=1e-3)
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
