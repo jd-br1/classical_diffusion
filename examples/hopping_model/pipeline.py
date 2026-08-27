@@ -49,8 +49,8 @@ if TYPE_CHECKING:
 
     from classical_diffusion.langevin import CanonicalSystem
 
-CHECK_EVERY = 2
-EARLY_STOP = 0.1  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
+CHECK_EVERY = 5
+EARLY_STOP = 0.01  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 16  # Number of isfs to test on at a time (does this need to be limited?)
 LOSS_BATCH_SIZE = 8  # Number of isfs to calculate loss of at a time
@@ -124,7 +124,7 @@ class ResNet(eqx.Module):
         x = jax.nn.relu(self.input_layer(x))  # shape = (hidden_channels, n_time_steps)
         x = self.residual_block(x)  # shape = (hidden_channels, n_time_steps)
 
-        x = jnp.mean(x, axis=-1)  # shape = (hidden_channels,)
+        x = x.reshape(-1)  # shape = (hidden_channels,)
         x = self.output_layer(x)  # shape = (2,)
 
         return x.at[1].set(1)  # 0.5 + 0.5 * jax.nn.tanh(x[1]))
@@ -230,6 +230,7 @@ def train_model(
     else:
         model = fresh_model
 
+    # try optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(1e-3))
     optimizer = optax.adam(learning_rate=1e-3)
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
@@ -297,8 +298,8 @@ def train_model(
         )
         losses.append(float(epoch_loss))
 
+        print(f"Epoch {epoch + 1:03d} | Loss: {epoch_loss:.5f}")
         if (epoch + 1) % CHECK_EVERY == 0:
-            print(f"Epoch {epoch + 1:03d} | Loss: {epoch_loss:.5f}")
             eqx.tree_serialise_leaves("model_checkpoint.eqx", model)
             loss_difference = losses[-CHECK_EVERY] - epoch_loss
             if (
@@ -347,7 +348,7 @@ def _vary_omega_well(
     _key: jax.Array,
 ) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
 
-    rand = jax.random.uniform(_key, shape=(), minval=0.25, maxval=5.25)
+    rand = jax.random.uniform(_key, shape=(), minval=0.25, maxval=1)
     omega_well = rand.astype(jnp.float32)
     omega_barrier = 1.0
     barrier_energy = 3.0
@@ -779,7 +780,7 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     delta_k = 0.5
 
     # Test parameters
-    traj_per_isf = 10
+    traj_per_isf = 100
     n_parameter_data_points = 50
     # 9 training isfs per test isf
     n_isfs = 10 * n_parameter_data_points
@@ -891,23 +892,38 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
         (delta_k,),
     )
 
-    fig, ax = get_fancy_figure()
-    fig, ax = get_figure(ax)
-    (line1,) = ax.plot(times, isf)
-    line1.set_label("Langevin ISF")
+    i = 0
+    times = test_list[0]["isf"]["time"]
+    for i in range(len(test_isfs)):
+        isf = test_isfs[i]
+        hopping_time = hopping_times[i]
+        predicted_lattice = Lattice1D(1.0, float(hopping_time))
+        model_isf = get_deterministic_isf(
+            get_deterministic_probabilities(predicted_lattice, (1000,), time_span),
+            (delta_k,),
+        )
 
-    (line2,) = ax.plot(times, model_isf)
-    line2.set_label("Model ISF")
+        fig, ax = get_fancy_figure()
+        fig, ax = get_figure(ax)
+        (line1,) = ax.plot(times, isf)
+        line1.set_label("Langevin ISF")
 
-    ax.set_xlabel("Time / s")
-    ax.set_ylabel("ISF")
+        (line2,) = ax.plot(times, model_isf)
+        line2.set_label("Model ISF")
 
-    ax.set_xlim(0, right=40)
-    ax.set_ylim(-1, 1)
-    ax.legend()
-    ax.set_title("Model trained on kramers variation, tested")
+        ax.set_xlabel("Time / s")
+        ax.set_ylabel("ISF")
 
-    fig.savefig("./examples/hopping_model/training_isfs/kramers_test.isf.pdf")
+        ax.set_xlim(0, right=40)
+        ax.set_ylim(-1, 1)
+        ax.legend()
+        ax.set_title("Kramers model test")
+
+        i += 1
+        fig.savefig(f"./examples/hopping_model/training_isfs/kramers_test_{i}.isf.pdf")
+
+        if i == 15:
+            break
 
     # Plot hopping rate against omega_well
     print("Plot Kramers stuff")
@@ -919,8 +935,8 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     ax.set_xlabel("Omega well")
     ax.set_ylabel("Hopping rate")
 
-    ax.set_xlim(0, right=20)
-    ax.set_ylim(0, 1)
+    ax.set_xlim(0, right=1)
+    ax.set_ylim(0, 0.2)
     ax.legend()
     ax.set_title("Kramers")
 
