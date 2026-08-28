@@ -351,7 +351,7 @@ def _vary_omega_well(
 
     rand = jax.random.uniform(_key, shape=(), minval=0.25, maxval=1.0)
     omega_well = rand.astype(jnp.float32)
-    omega_barrier = 1.0
+    omega_barrier = 10.0
     barrier_energy = 3.0
     m = 1.0
     temperature = 0.5 / Boltzmann
@@ -811,7 +811,7 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
 
     # Test parameters
     traj_per_isf = 10
-    n_parameter_data_points = 5
+    n_parameter_data_points = 50
     # 9 training isfs per test isf
     n_isfs = 10 * n_parameter_data_points
 
@@ -907,6 +907,8 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     )
 
     print("\nModel trained! Testing on test data")
+    _check_model_fits(trained_model, test_list, time_span=time_span, delta_k=delta_k)
+
     test_params = jnp.array([data["parameters"] for data in test_list])
 
     # Test model: get model output
@@ -915,39 +917,6 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     )
     hopping_rate = 1.0 / hopping_times
     omega_wells = jnp.array([data["parameters"][0] for data in test_list])
-
-    i = 0
-    times = test_list[0]["isf"]["time"]
-    for i in range(len(test_list)):
-        isf = test_list[i]["isf"]["isf"]
-        hopping_time = hopping_times[i]
-        predicted_lattice = Lattice1D(1.0, float(hopping_time))
-        get_deterministic_isf(
-            get_deterministic_probabilities(predicted_lattice, (1000,), time_span),
-            (delta_k,),
-        )
-
-        fig, ax = get_fancy_figure()
-        fig, ax = get_figure(ax)
-        (line1,) = ax.plot(times, isf)
-        line1.set_label("Langevin ISF")
-
-        (line2,) = ax.plot(times, isf)
-        line2.set_label("Model ISF")
-
-        ax.set_xlabel("Time / s")
-        ax.set_ylabel("ISF")
-
-        ax.set_xlim(0, right=200)
-        ax.set_ylim(-1, 1)
-        ax.legend()
-        ax.set_title("Kramers model test")
-
-        i += 1
-        fig.savefig(f"./examples/hopping_model/training_isfs/kramers_test_{i}.isf.pdf")
-
-        if i == 15:
-            break
 
     # Plot hopping rate against omega_well
     print("Plot Kramers stuff")
@@ -998,18 +967,14 @@ def _check_training_data(traj_filepath: str, isf_filepath) -> None:
     fig, ax = get_fancy_figure()
     fig, ax = get_figure(ax)
 
-    i = 0
     lines = []
-    for i in range(len(batched["result"][0])):
+    for i in min(range(len(batched["result"][0])), 10):
         print(i)
         times = batched["result"][0][i]
         x_points = batched["result"][1][i]
         (line,) = ax.plot(times, x_points[0][0])
         line.set_color("C0")
         lines.append(line)
-
-        if i == 10:
-            break
 
     lines[-1].set_color("C1")
 
@@ -1029,9 +994,8 @@ def _check_training_data(traj_filepath: str, isf_filepath) -> None:
             except EOFError:
                 break
 
-    i = 0
     times = generated_isf_data[0]["isf"]["time"]
-    for i in range(len(generated_isf_data)):
+    for i in min(range(len(generated_isf_data)), 15):
         isf = generated_isf_data[i]["isf"]["isf"]
 
         fig, ax = get_fancy_figure()
@@ -1047,14 +1011,48 @@ def _check_training_data(traj_filepath: str, isf_filepath) -> None:
         ax.legend()
         ax.set_title("Langevin trajectory")
 
-        i += 1
         fig.savefig(f"./examples/hopping_model/training_isfs/training_{i}.isf.pdf")
 
-        if i == 15:
-            break
+
+def _check_model_fits(
+    trained_model: ResNet, test_list: list[dict], *, time_span: TimeSpan, delta_k: float
+) -> None:
+
+    # Test model: get model output
+    test_params = jnp.array([data["parameters"] for data in test_list])
+    hopping_times, _ = jax.vmap(get_hopping_time_and_offset, (None, 0))(
+        trained_model, test_params
+    )
+    times = jnp.linspace(time_span.t_start, time_span.t_end, time_span.n_steps + 1)
+
+    for i in min(range(len(test_list)), 15):
+        isf = test_list[i]["isf"]["isf"]
+        hopping_time = hopping_times[i]
+        predicted_lattice = Lattice1D(1.0, float(hopping_time))
+        get_deterministic_isf(
+            get_deterministic_probabilities(predicted_lattice, (1000,), time_span),
+            (delta_k,),
+        )
+
+        fig, ax = get_fancy_figure()
+        fig, ax = get_figure(ax)
+        (line1,) = ax.plot(times, isf)
+        line1.set_label("Langevin ISF")
+
+        (line2,) = ax.plot(times, isf)
+        line2.set_label("Model ISF")
+
+        ax.set_xlabel("Time / s")
+        ax.set_ylabel("ISF")
+
+        ax.set_xlim(0, right=200)
+        ax.set_ylim(-1, 1)
+        ax.legend()
+        ax.set_title("Kramers model test")
+
+        fig.savefig(f"./examples/hopping_model/training_isfs/kramers_test_{i}.isf.pdf")
 
 
 if __name__ == "__main__":
     path = "./examples/data"
     kramers_rate_plot_test(path)
-    
