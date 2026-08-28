@@ -38,7 +38,8 @@ from classical_diffusion.util import timed
 if TYPE_CHECKING:
     from classical_diffusion.langevin import CanonicalSystem
 
-EARLY_STOP = 0.1  # Improvement to loss over 10 epochs deemed small enough to have reached training plateau
+CHECK_EVERY = 10
+EARLY_STOP = 0.1  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 5
 
@@ -248,12 +249,16 @@ def train_model(
             )
             epoch_loss += loss
 
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch + 1} | Loss = {epoch_loss:.5f}")
+        print(f"Epoch {epoch + 1:03d} | Loss: {epoch_loss:.5f}")
+        if (epoch + 1) % CHECK_EVERY == 0:
             eqx.tree_serialise_leaves("model_checkpoint.eqx", model)
-
-            if losses[-9] - epoch_loss < EARLY_STOP:
-                print("\nminimal improvement: cancelling training")
+            loss_difference = losses[-CHECK_EVERY] - epoch_loss
+            if (
+                len(losses) >= CHECK_EVERY
+                and loss_difference >= 0
+                and loss_difference < EARLY_STOP
+            ):
+                print("Early stopping triggered: plateau reached.")
                 break
 
         else:
@@ -392,7 +397,7 @@ def generate_single_clean_isf(
 
 
 @timed
-def generate_many_equiv_trajectories(
+def generate_langevin_trajectories(
     traj_filepath: str, n_traj: int, *, time_span: TimeSpan
 ) -> None:
     """Run the langevin simulations and save to file."""
@@ -404,25 +409,6 @@ def generate_many_equiv_trajectories(
     trajectories = [
         jax.tree.map(operator.itemgetter(i), batched_trajectories)
         for i in range(n_traj)
-    ]
-
-    with Path(traj_filepath).open("wb") as file:
-        pickle.dump(trajectories, file)
-
-
-@timed
-def generate_random_langevin_trajectories(
-    traj_filepath: str, n_isfs: int, *, time_span: TimeSpan
-) -> None:
-    """Run the langevin simulations and save to file."""
-    keys = jax.random.split(jax.random.key(100), n_isfs)
-
-    batched_trajectories = jax.tree.map(
-        np.asarray, run_langevin_trajectories(time_span=time_span, keys=keys)
-    )
-    trajectories = [
-        jax.tree.map(operator.itemgetter(i), batched_trajectories)
-        for i in range(n_isfs)
     ]
 
     with Path(traj_filepath).open("wb") as file:
@@ -554,9 +540,9 @@ def single_clean_test(folderpath: str) -> None:
     fig.savefig("./examples/hopping_model/model_test_single_clean.isf.pdf")
 
 
-def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ruff: ignore[too-many-locals]
-    """Train and test a model on n_isfs equivalent but noisy ISFs."""
-    print(f"\n\nRunning test with {n_isfs} equivalent isfs\n")
+def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ruff: ignore[too-many-locals]
+    """Train and test a model on n_isfs ISFs."""
+    print(f"\n\nRunning test with {n_isfs} isfs of variable barrier energy\n")
 
     # Experimental parameters
     time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
@@ -573,7 +559,7 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
     # Ensure isfs exist
     if not Path(traj_filepath).exists():
         print("No data, generating new equivalent trajectories")
-        generate_many_equiv_trajectories(
+        generate_langevin_trajectories(
             traj_filepath, n_isfs * traj_per_isf, time_span=time_span
         )
     if not Path(isfs_filepath).exists():
@@ -590,9 +576,7 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
                 break
 
     # Train model: select training data
-    training_isfs = jnp.array(
-        [data.get("isf").get("isf") for data in training_isf_data]
-    )
+    training_isfs = jnp.array([data["isf"]["isf"] for data in training_isf_data])
 
     # Train model: train model
     print("Training model")
@@ -695,4 +679,4 @@ def many_equiv_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:
 if __name__ == "__main__":
     path = "./examples/data"
     # single_clean_test(path)
-    many_equiv_test(path, 20)
+    many_test(path, 20)
