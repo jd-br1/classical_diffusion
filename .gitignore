@@ -6,3 +6,6 @@ __pycache__/
 *.png
 *.pdf
 *.gif
+*.pkl
+*.csv
+*.csv.bak
