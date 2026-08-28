@@ -5,12 +5,15 @@ from classical_diffusion.analysis import (
     plot_isf,
     plot_x_evolution_1d,
 )
+from classical_diffusion.hopping import KramersParameters
 from classical_diffusion.langevin import (
+    KramersSystem1D,
     PeriodicSystem1D,
     plot_force_1d,
     plot_periodic_potential_1d,
     solve_ensemble,
     solve_ensemble_ballistic,
+    solve_ensemble_overdamped,
 )
 from classical_diffusion.plot import get_fancy_figure
 from classical_diffusion.simulation import TimeSpan
@@ -27,14 +30,23 @@ def _plot_periodic_system() -> None:
 
 
 def _plot_periodic_trajectory() -> None:
-    system = PeriodicSystem1D(
-        gamma=0.1, temperature=0.5 / Boltzmann, m=1.0, delta_x=5, barrier_energy=2
+    system = KramersSystem1D(
+        params=KramersParameters(
+            omega_well=1.0,
+            omega_barrier=1.0,
+            barrier_energy=3.0,
+            m=1.0,
+            temperature=5 / Boltzmann,
+            gamma=0.1,
+        ),
     )
 
-    result = solve_ensemble(
+    print(system.delta_x)
+
+    result = solve_ensemble_overdamped(
         system,
-        TimeSpan(t_end=40 / system.gamma, n_steps=4000),
-        n_samples=5,
+        TimeSpan(t_end=10 / system.gamma, n_steps=4000),
+        n_samples=2,
     )
 
     fig, ax = get_fancy_figure()
@@ -42,6 +54,22 @@ def _plot_periodic_trajectory() -> None:
     _, _, _ = plot_x_evolution_1d(result=result, ax=ax)
 
     fig.savefig("./examples/1d_langevin.trajectory.pdf")
+
+    fig, ax = get_fancy_figure()
+
+    _, ax, line_1, _ = plot_isf(
+        result=result,
+        ax=ax,
+        delta_k=(0.1 * 2 * np.pi / system.delta_x,),
+        pairwise=False,
+    )
+    line_1.set_label("ballistic simulation")
+
+    ax.set_xlim(0, 4 / system.gamma)
+    ax.set_ylim(0, 1)
+
+    ax.legend(handles=[line_1])
+    fig.savefig("examples/1d_langevin.isf.pdf")
 
 
 def _plot_periodic_isf() -> None:
@@ -78,6 +106,6 @@ def _plot_periodic_isf() -> None:
 
 
 if __name__ == "__main__":
-    _plot_periodic_system()
+    # _plot_periodic_system()
     _plot_periodic_trajectory()
-    _plot_periodic_isf()
+    # _plot_periodic_isf()

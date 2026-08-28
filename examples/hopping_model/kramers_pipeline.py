@@ -50,10 +50,10 @@ if TYPE_CHECKING:
     from classical_diffusion.langevin import CanonicalSystem
 
 CHECK_EVERY = 5
-EARLY_STOP = 0.1  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
+EARLY_STOP = 0.0001  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
-BATCH_SIZE = 16  # Number of isfs to test on at a time (does this need to be limited?)
-LOSS_BATCH_SIZE = 8  # Number of isfs to calculate loss of at a time
+BATCH_SIZE = 10  # Number of isfs to test on at a time (does this need to be limited?)
+LOSS_BATCH_SIZE = 5  # Number of isfs to calculate loss of at a time
 
 
 class JaxEnsembleResults(TypedDict):
@@ -112,17 +112,28 @@ class ResNet(eqx.Module):
 
         # Project hidden channels down to output
         self.output_layer = eqx.nn.Linear(hidden_dim, 2, key=output_key)
+        self.output_layer = eqx.tree_at(
+            lambda l: l.bias,
+            self.output_layer,
+            jnp.array([1.0, 0.0]),  # Sets initial hop_time log-scale bias
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """Propagate input through model layers."""
+        # Normalise inputs
         x = x.at[4].set(
             x[4] * Boltzmann
         )  # Turn temperature into kbt for simplified calculation
+        x_mean = jnp.mean(x, axis=0)
+        x_std = jnp.std(x, axis=0) + 1e-6
+        x = (x - x_mean) / x_std
+
+        # Run model
         x = jax.nn.relu(self.input_layer(x))  # shape = (hidden_dim,)
         x = self.residual_block(x)  # shape = (hidden_dim,)
         x = self.output_layer(x)  # shape = (2,)
 
-        hop_time = jnp.exp(x[0]) + 1e-4
+        hop_time = jnp.exp(x[0])
         offset = 1.0
         return jnp.array([hop_time, offset])
 
@@ -181,12 +192,11 @@ def loss_fn(
     isfs = isfs.reshape(usable_samples, -1)
 
     corrected_isfs = offsets[:usable_samples, None] * isfs
-    temp_corrected_isfs = (corrected_isfs * 0.5) + 0.5
     targets = test_isfs[:usable_samples]
 
     # Calculate the error by
-    errors = jnp.sum(
-        (temp_corrected_isfs - targets) ** 2,
+    errors = jnp.mean(
+        (corrected_isfs - targets) ** 2,
         axis=-1,
     )
 
@@ -363,6 +373,33 @@ def _vary_omega_well(
 
 
 @jax.jit
+def _constant(
+    _key: jax.Array,
+) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
+
+    omega_well = 1.0
+    omega_barrier = 10.0
+    barrier_energy = 3.0
+    m = 1.0
+    temperature = 0.5 / Boltzmann
+    gamma = 0.1
+
+    params = (omega_well, omega_barrier, barrier_energy, m, temperature, gamma)
+    system = KramersSystem1D(
+        params=KramersParameters(
+            omega_well=omega_well,  # ty: ignore[invalid-argument-type]
+            omega_barrier=omega_barrier,
+            barrier_energy=barrier_energy,
+            m=m,
+            temperature=temperature,
+            gamma=gamma,
+        )
+    ).as_canonical()
+
+    return params, system  # ty: ignore[invalid-return-type]
+
+
+@jax.jit
 def _inits_constant(
     _key: jax.Array,
 ) -> tuple[
@@ -413,7 +450,7 @@ def run_langevin_trajectories(
 default_params = KramersParameters(
     omega_well=1.0,
     omega_barrier=1.0,
-    barrier_energy=1.0,
+    barrier_energy=3.0,
     m=1.0,
     temperature=0.5 / Boltzmann,
     gamma=0.1,
@@ -509,6 +546,8 @@ def generate_isfs(
             x_chunk = x_points_all[i : i + traj_per_isf]
             times = times_all[i]
             params = jax.tree.map(operator.itemgetter(i), parameters_all)
+            # delta_x = KP(params).delta_x
+            # delta_k = 0.1 * 2 * jnp.pi / delta_x
 
             isf = get_pairwise_isf(jnp.array(x_chunk), jnp.asarray((delta_k,)))
             avg_isf = jnp.mean(isf, axis=0)
@@ -550,7 +589,7 @@ def single_clean_test(folderpath: str) -> None:
     print("\n\nRunning test with a single, clean isf\n")
 
     # Experimental parameters
-    time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
+    time_span = TimeSpan(t_start=0, t_end=400, n_steps=200)
     delta_k = 0.5
 
     # Define filepath
@@ -619,7 +658,7 @@ def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ru
     print(f"\n\nRunning test with {n_isfs} equivalent isfs\n")
 
     # Experimental parameters
-    time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
+    time_span = TimeSpan(t_start=0, t_end=400, n_steps=200)
     delta_k = 0.5
     traj_per_isf = 10
 
@@ -707,7 +746,7 @@ def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ru
     ax.set_xlabel("Time / s")
     ax.set_ylabel("ISF")
 
-    ax.set_xlim(0, right=20)
+    ax.set_xlim(0, right=400)
     ax.set_ylim(0, 1)
     ax.legend()
     ax.set_title("Model trained on many, tested on clean")
@@ -750,7 +789,7 @@ def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ru
         ax.set_xlabel("Time / s")
         ax.set_ylabel("ISF")
 
-        ax.set_xlim(0, right=40)
+        ax.set_xlim(0, right=200)
         ax.set_ylim(-1, 1)
         ax.legend()
         ax.set_title("Model trained on many, tested on random")
@@ -763,28 +802,28 @@ def many_test(folderpath: str, n_isfs: int, resume: bool = False) -> None:  # ru
 
 
 def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
-    """Train a model on a range of omega_well values and correlate ."""
-    print("\n\nRunning kamers rate theory\n")
+    """Train a model on a range of barrier_energy values."""
+    print("\n\nRunning kramers rate theory\n")
 
     # Experimental parameters
-    time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
-    delta_k = 0.5
+    time_span = TimeSpan(t_start=0, t_end=400, n_steps=200)
+    delta_k = jnp.pi / 5.0
 
     # Test parameters
-    traj_per_isf = 100
-    n_parameter_data_points = 50
+    traj_per_isf = 10
+    n_parameter_data_points = 5
     # 9 training isfs per test isf
     n_isfs = 10 * n_parameter_data_points
 
     # Define filepaths
     traj_filepath = (
         folderpath
-        + f"/vary_omega_well/langevin_{n_isfs * traj_per_isf}_trajectories.pkl"
+        + f"/vary_barrier_energy/langevin_{n_isfs * traj_per_isf}_trajectories.pkl"
     )
     Path(traj_filepath).parent.mkdir(parents=True, exist_ok=True)
     isfs_filepath = (
         folderpath
-        + f"/vary_omega_well/langevin_{n_isfs}_isf_averaged_over_{traj_per_isf}.pkl"
+        + f"/vary_barrier_energy/langevin_{n_isfs}_isf_averaged_over_{traj_per_isf}.pkl"
     )
 
     # Ensure isfs exist
@@ -794,11 +833,18 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
             traj_filepath,
             n_isfs * traj_per_isf,
             time_span=time_span,
-            generate_params=_vary_omega_well,
+            generate_params=_constant,
         )
     if not Path(isfs_filepath).exists():
         print("No isfs, generating new equivalent isfs")
         generate_isfs(traj_filepath, isfs_filepath, traj_per_isf, delta_k=delta_k)
+
+    _check_training_data(
+        path
+        + f"/vary_barrier_energy/langevin_{n_isfs * traj_per_isf}_trajectories.pkl",
+        path
+        + f"/vary_barrier_energy/langevin_{n_isfs}_isf_averaged_over_{traj_per_isf}.pkl",
+    )
 
     # Load isfs
     generated_isf_data = []
@@ -876,24 +922,23 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
         isf = test_list[i]["isf"]["isf"]
         hopping_time = hopping_times[i]
         predicted_lattice = Lattice1D(1.0, float(hopping_time))
-        model_isf = get_deterministic_isf(
+        get_deterministic_isf(
             get_deterministic_probabilities(predicted_lattice, (1000,), time_span),
             (delta_k,),
         )
-        temp_isf = (model_isf * 0.5) + 0.5
 
         fig, ax = get_fancy_figure()
         fig, ax = get_figure(ax)
         (line1,) = ax.plot(times, isf)
         line1.set_label("Langevin ISF")
 
-        (line2,) = ax.plot(times, temp_isf)
+        (line2,) = ax.plot(times, isf)
         line2.set_label("Model ISF")
 
         ax.set_xlabel("Time / s")
         ax.set_ylabel("ISF")
 
-        ax.set_xlim(0, right=40)
+        ax.set_xlim(0, right=200)
         ax.set_ylim(-1, 1)
         ax.legend()
         ax.set_title("Kramers model test")
@@ -915,7 +960,7 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
     ax.set_ylabel("Hopping rate")
 
     ax.set_xlim(0, right=1)
-    ax.set_ylim(0, 0.2)
+    ax.set_ylim(0, 1)
     ax.legend()
     ax.set_title("Kramers")
 
@@ -927,7 +972,7 @@ def kramers_rate_plot_test(folderpath: str, resume: bool = False) -> None:
 def pre_generate_on_gpu(folderpath: str) -> None:
     """Pre-generate training isfs."""
     # Experimental parameters
-    time_span = TimeSpan(t_start=0, t_end=40, n_steps=200)
+    time_span = TimeSpan(t_start=0, t_end=400, n_steps=200)
 
     num_trajs = [10000, 100000, 1000000]
 
@@ -944,8 +989,72 @@ def pre_generate_on_gpu(folderpath: str) -> None:
             )
 
 
+def _check_training_data(traj_filepath: str, isf_filepath) -> None:
+    print("\nChecking trajectory plot")
+    # Open the trajectories file and load in the trajectories
+    with Path(traj_filepath).open("rb") as file:
+        batched = pickle.load(file)
+
+    fig, ax = get_fancy_figure()
+    fig, ax = get_figure(ax)
+
+    i = 0
+    lines = []
+    for i in range(len(batched["result"][0])):
+        print(i)
+        times = batched["result"][0][i]
+        x_points = batched["result"][1][i]
+        (line,) = ax.plot(times, x_points[0][0])
+        line.set_color("C0")
+        lines.append(line)
+
+        if i == 10:
+            break
+
+    lines[-1].set_color("C1")
+
+    ax.set_xlabel("$time$")
+    ax.set_ylabel("$x$")
+    ax.set_xlim(times[0], times[-1])
+
+    fig.savefig("./examples/hopping_model/training_isfs/training.traj.pdf")
+
+    print("\nChecking ISFs")
+    # Load isfs
+    generated_isf_data = []
+    with Path(isf_filepath).open("rb") as file:
+        while True:
+            try:
+                generated_isf_data.append(pickle.load(file))  # ruff: ignore[suspicious-pickle-usage]
+            except EOFError:
+                break
+
+    i = 0
+    times = generated_isf_data[0]["isf"]["time"]
+    for i in range(len(generated_isf_data)):
+        isf = generated_isf_data[i]["isf"]["isf"]
+
+        fig, ax = get_fancy_figure()
+        fig, ax = get_figure(ax)
+        (line1,) = ax.plot(times, isf)
+        line1.set_label("Langevin ISF")
+
+        ax.set_xlabel("Time / s")
+        ax.set_ylabel("ISF")
+
+        ax.set_xlim(0, right=200)
+        ax.set_ylim(0, 1)
+        ax.legend()
+        ax.set_title("Langevin trajectory")
+
+        i += 1
+        fig.savefig(f"./examples/hopping_model/training_isfs/training_{i}.isf.pdf")
+
+        if i == 15:
+            break
+
+
 if __name__ == "__main__":
     path = "./examples/data"
-    # many_test(path, 20)
-    # pre_generate_on_gpu(path)
     kramers_rate_plot_test(path)
+    
