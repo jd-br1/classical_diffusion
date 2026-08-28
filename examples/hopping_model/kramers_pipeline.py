@@ -11,6 +11,7 @@ from classical_diffusion.hopping import (
     get_deterministic_isf,
     get_deterministic_probabilities,
 )
+from classical_diffusion.hopping import KramersParameters as KP
 from classical_diffusion.jax import get_measured_data, get_pairwise_isf
 from classical_diffusion.jax.hopping import (
     get_deterministic_isf as get_deterministic_isf_jax,
@@ -449,7 +450,7 @@ def run_langevin_trajectories(
 
 default_params = KramersParameters(
     omega_well=1.0,
-    omega_barrier=1.0,
+    omega_barrier=10.0,
     barrier_energy=3.0,
     m=1.0,
     temperature=0.5 / Boltzmann,
@@ -959,6 +960,17 @@ def pre_generate_on_gpu(folderpath: str) -> None:
 
 
 def _check_training_data(traj_filepath: str, isf_filepath) -> None:
+    print(
+        "delta_x = ",
+        KP(
+            omega_well=1.0,
+            omega_barrier=10.0,
+            barrier_energy=3.0,
+            m=1.0,
+            temperature=0.5 / Boltzmann,
+            gamma=0.1,
+        ).delta_x,
+    )
     print("\nChecking trajectory plot")
     # Open the trajectories file and load in the trajectories
     with Path(traj_filepath).open("rb") as file:
