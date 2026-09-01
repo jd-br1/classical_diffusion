@@ -57,7 +57,7 @@ def solve_ensemble[L: Lattice = Lattice](
     return HoppingSimulationResult[L](
         system=system,
         times=np.array(times),
-        x_indices=np.array(jnp.transpose(x_indices, (0, 2, 1))),
+        x_indices=np.array(x_indices[:, None, :]),
     )
 
 

@@ -29,8 +29,8 @@ def _plot_1d_hopping_isf() -> None:
 
     results = solve_ensemble(
         system=Lattice1D(lattice_spacing=5, hop_time=15),
-        time_span=TimeSpan(t_end=4000, n_steps=8000),
-        initial_condition=np.full((4000, 1), 0.0),
+        time_span=TimeSpan(t_end=2000, n_steps=4000),
+        initial_condition=np.full((2000, 1), 0.0),
     )
 
     fig, ax = get_fancy_figure()

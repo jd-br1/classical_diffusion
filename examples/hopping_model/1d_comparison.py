@@ -1,3 +1,9 @@
+import os
+
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".5"
+
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -74,12 +80,12 @@ def plot_relaxation_corrected_hopping_isf(
 def _plot_kramers_system() -> None:
     system = KramersSystem1D(
         params=KramersParameters(
-            omega_well=2.0,
-            omega_barrier=1.0,
-            barrier_energy=3.0,
+            omega_well=0.5,
+            omega_barrier=10.0,
+            barrier_energy=1.0,
             m=1.0,
-            gamma=0.1,
             temperature=0.5 / Boltzmann,
+            gamma=0.1,
         ),
     )
 
@@ -99,29 +105,31 @@ def _kramers_harmonic_comparison() -> None:
 
     system = KramersSystem1D(
         params=KramersParameters(
-            omega_well=2.0,
-            omega_barrier=1.0,
-            barrier_energy=3.0,
+            omega_well=0.5,
+            omega_barrier=10.0,
+            barrier_energy=1.0,
             m=1.0,
-            gamma=0.1,
             temperature=0.5 / Boltzmann,
-        ),
+            gamma=0.1,
+        )
     )
 
     fig, ax = get_fancy_figure()
-    initial_position = np.full((100, 1), 0.0)
-    time_span = TimeSpan(t_end=200, n_steps=2000)
+    initial_position = np.full((10, 1), 0.0)
+    time_span = TimeSpan(t_end=5, n_steps=500)
 
+    print("solve many overdamped")
     langevin_result = solve_many_overdamped(
         system,
         time_span,
         (initial_position, np.full(initial_position.shape, 0.0)),
     )
 
-    delta_k = (0.5 * 2 * np.pi / system.delta_x,)
+    delta_k = (np.pi / 2.5,)
 
     lattice = lattice_1d_from_kramers_parameters(system.kramers_params)
 
+    print("solve ensemble")
     lattice_result = solve_ensemble(
         system=lattice,
         time_span=time_span,
@@ -152,7 +160,7 @@ def _kramers_harmonic_comparison() -> None:
     )
     line.set_label("Overdamped Langevin")
 
-    ax.set_xlim(0, right=100)
+    ax.set_xlim(0, right=5)
     ax.set_ylim(0, 1)
     ax.legend()
     ax.set_title("Hopping vs Langevin for a harmonic potential")
@@ -230,6 +238,6 @@ def _kramers_sinusoid_comparison() -> None:
 
 
 if __name__ == "__main__":
-    _plot_kramers_system()
+    # _plot_kramers_system()
     _kramers_harmonic_comparison()
-    _kramers_sinusoid_comparison()
+    # _kramers_sinusoid_comparison()
