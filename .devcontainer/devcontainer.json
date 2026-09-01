@@ -46,5 +46,6 @@
       ]
     }
   },
+  "runArgs": ["--gpus", "all"],
   "onCreateCommand": "npm install -g cspell && uv python install && uv sync --all-extras"
 }
