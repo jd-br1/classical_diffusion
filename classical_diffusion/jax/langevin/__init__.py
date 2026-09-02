@@ -4,13 +4,16 @@ from classical_diffusion.jax.langevin._langevin import (
     solve_many,
     solve_many_overdamped,
 )
-
-from ._system import KramersParametersJax as KramersParameters
-from ._system import KramersSystem1D
+from classical_diffusion.jax.langevin._system import (
+    KramersParametersJax as KramersParameters,
+)
+from classical_diffusion.jax.langevin._system import KramersSystem1D
+from classical_diffusion.jax.langevin._system_analysis import get_isf_offset
 
 __all__ = [
     "KramersParameters",
     "KramersSystem1D",
+    "get_isf_offset",
     "solve_many",
     "solve_many_overdamped",
 ]

@@ -24,6 +24,7 @@ from classical_diffusion.jax.hopping import (
 from classical_diffusion.jax.langevin import (
     KramersParameters,
     KramersSystem1D,
+    get_isf_offset,
 )
 from classical_diffusion.jax.langevin import (
     solve_many_overdamped as solve_many_overdamped_jax,
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
     from classical_diffusion.langevin import CanonicalSystem
 
 CHECK_EVERY = 5
-EARLY_STOP = 0.005  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
+EARLY_STOP = 1  # 0.0005  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 16  # Number of isfs to test on at a time (does this need to be limited?)
 LOSS_BATCH_SIZE = 8  # Number of isfs to calculate loss of at a time
@@ -166,6 +167,7 @@ def loss_fn(
     time_span: TimeSpan,
     delta_k: float,
     test_isfs: jnp.ndarray,
+    test_offsets: jnp.ndarray,
     test_params: jnp.ndarray,
 ) -> jax.Array:
     """Loss function for an ISF hopping rate prediction model."""
@@ -177,7 +179,6 @@ def loss_fn(
     # Pass batched isfs through the model to predict hopping rates and isf offsets
     predictions = jax.vmap(model, (0))(test_params)  # ty: ignore[invalid-argument-type]
     hopping_times = predictions[:, 0]
-    offsets = predictions[:, 1]
 
     total_samples = hopping_times.shape[0]
     num_chunks = total_samples // LOSS_BATCH_SIZE
@@ -197,7 +198,7 @@ def loss_fn(
     isfs = jax.lax.map(_process_loss_batch, hop_time_chunks)
     isfs = isfs.reshape(usable_samples, -1)
 
-    corrected_isfs = offsets[:usable_samples, None] * isfs
+    corrected_isfs = test_offsets[:usable_samples, None] * isfs
     targets = test_isfs[:usable_samples]
 
     # Calculate the error by
@@ -222,7 +223,7 @@ def get_hopping_time_and_offset(
 
 
 def train_model(
-    training_data: tuple[jnp.ndarray, jnp.ndarray],
+    training_data: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
     *,
     time_span: TimeSpan,
     delta_k: float,
@@ -241,7 +242,7 @@ def train_model(
     optimizer = optax.adam(learning_rate=1e-3)
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    training_isfs, training_params = training_data
+    training_isfs, training_params, training_offsets = training_data
 
     # Define number batches per epoch
     num_isfs = len(training_isfs)
@@ -251,10 +252,11 @@ def train_model(
     loss_and_grad_fn = eqx.filter_value_and_grad(loss_fn)
 
     def batch_step(
-        carry: tuple[eqx.Module, optax.OptState], batch: tuple[jnp.ndarray, jnp.ndarray]
+        carry: tuple[eqx.Module, optax.OptState],
+        batch: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
     ) -> tuple[tuple[eqx.Module, optax.OptState], jnp.ndarray]:
         model, opt_state = carry
-        batch_isfs, batch_params = batch
+        batch_isfs, batch_params, batch_offsets = batch
 
         batch_loss, gradients = loss_and_grad_fn(
             model,
@@ -262,6 +264,7 @@ def train_model(
             delta_k=delta_k,
             test_isfs=batch_isfs,
             test_params=batch_params,
+            test_offsets=batch_offsets,
         )
 
         updates, opt_state = optimizer.update(gradients, opt_state)
@@ -276,6 +279,7 @@ def train_model(
         opt_state: optax.OptState,
         isfs: jnp.ndarray,
         params: jnp.ndarray,
+        offsets: jnp.ndarray,
     ) -> tuple[eqx.Module, optax.OptState, jnp.ndarray]:
         """Run one epoch of ML algorithm."""
         batched_isfs = isfs[:usable_len].reshape(
@@ -284,9 +288,14 @@ def train_model(
         batched_params = params[:usable_len].reshape(
             num_batches, BATCH_SIZE, *params.shape[1:]
         )
+        batched_offsets = offsets[:usable_len].reshape(
+            num_batches, BATCH_SIZE, *offsets.shape[1:]
+        )
 
         (model, opt_state), batch_losses = jax.lax.scan(
-            batch_step, (model, opt_state), (batched_isfs, batched_params)
+            batch_step,
+            (model, opt_state),
+            (batched_isfs, batched_params, batched_offsets),
         )
 
         return model, opt_state, jnp.sum(batch_losses)
@@ -299,9 +308,10 @@ def train_model(
 
         shuffled_isfs = training_isfs[permutation]
         shuffled_params = training_params[permutation]
+        shuffled_offsets = training_offsets[permutation]
 
         model, optimizer_state, epoch_loss = run_epoch(
-            model, optimizer_state, shuffled_isfs, shuffled_params
+            model, optimizer_state, shuffled_isfs, shuffled_params, shuffled_offsets
         )
         losses.append(float(epoch_loss))
         print(f"Epoch {epoch + 1:03d} | Loss: {epoch_loss:.5f}")
@@ -381,7 +391,7 @@ def _vary_barrier_energy(
     _key: jax.Array,
 ) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
 
-    rand = jax.random.uniform(_key, shape=(), minval=0.5, maxval=6.0)
+    rand = jax.random.uniform(_key, shape=(), minval=0.2, maxval=2.0)
     omega_well = 1.0
     omega_barrier = 5.0
     barrier_energy = rand.astype(jnp.float32)
@@ -561,7 +571,12 @@ def generate_many_langevin_trajectories(
 
 @timed
 def generate_isfs(
-    traj_filepath: str, isfs_filepath: str, traj_per_isf: int, *, delta_k: float
+    traj_filepath: str,
+    isfs_filepath: str,
+    traj_per_isf: int,
+    *,
+    delta_k: float,
+    generate_offsets: "Callable[ [jnp.ndarray, float, float], jnp.ndarray    ]" = get_isf_offset,  # ruff: ignore[quoted-annotation]
 ) -> None:
     """Generate isfs from trajectories saved in ML pipeline and save to file."""
     # Open the trajectories file and load in the trajectories
@@ -586,9 +601,12 @@ def generate_isfs(
             avg_data = get_measured_data(avg_isf, "real")[0]
             sem_data = get_measured_data(sem_isf, "real")[0]
 
+            isf_offset = generate_offsets(params, delta_k, times[-1])
+
             isf_record = {
                 "parameters": params,
                 "isf": {"time": times, "isf": avg_data, "error": sem_data},
+                "offset": isf_offset,
             }
             pickle.dump(isf_record, file)
 
@@ -928,10 +946,11 @@ def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  #
     # Train model: select training data
     training_isfs = jnp.array([data["isf"]["isf"] for data in training_list])
     training_params = jnp.array([data["parameters"] for data in training_list])
+    training_offsets = jnp.array([data["offset"] for data in training_list])
 
     print("\nTraining model")
     trained_model = train_model(
-        (training_isfs, training_params),
+        (training_isfs, training_params, training_offsets),
         time_span=time_span,
         delta_k=delta_k,
         resume=resume,
@@ -968,7 +987,7 @@ def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  #
         )
 
     (line2,) = ax.plot(
-        barrier_energies,
+        sorted(barrier_energies),
         [_kramers_rate(barrier_energy) for barrier_energy in sorted(barrier_energies)],
     )
     line2.set_label("Kramers")
@@ -977,7 +996,7 @@ def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  #
     ax.set_ylabel("Hopping rate")
 
     ax.set_xlim(0, right=5)
-    ax.set_ylim(0, 5)
+    ax.set_ylim(0, 10)
     ax.legend()
     ax.set_title("Kramers")
 
@@ -1064,11 +1083,15 @@ def _check_training_data(
     for i in range(min(len(generated_isf_data), 15)):
         isf = generated_isf_data[i]["isf"]["isf"]
         params = generated_isf_data[i]["parameters"]
+        offset = generated_isf_data[i]["offset"]
 
         fig, ax = get_fancy_figure()
         fig, ax = get_figure(ax)
         (line1,) = ax.plot(times, isf)
         line1.set_label("Langevin ISF")
+
+        (line2,) = ax.plot(times, np.full((times.shape[0],), offset))
+        line2.set_label("Offset")
 
         ax.set_xlabel("Time / s")
         ax.set_ylabel("ISF")
@@ -1094,6 +1117,7 @@ def _check_model_fits(
 
     for i in range(min(len(test_list), 15)):
         isf = test_list[i]["isf"]["isf"]
+        offest = test_list[i]["offset"]
         hopping_time = hopping_times[i]
         predicted_lattice = Lattice1D(1.0, float(hopping_time))
         model_isf = get_deterministic_isf(
@@ -1101,13 +1125,15 @@ def _check_model_fits(
             (delta_k,),
         )
 
+        corrected_isf = offest * model_isf
+
         fig, ax = get_fancy_figure()
         fig, ax = get_figure(ax)
         (line1,) = ax.plot(times, isf)
         line1.set_label("Langevin ISF")
 
-        (line2,) = ax.plot(times, model_isf)
-        line2.set_label("Model ISF")
+        (line2,) = ax.plot(times, corrected_isf)
+        line2.set_label("Corrected Model ISF")
 
         ax.set_xlabel("Time / s")
         ax.set_ylabel("ISF")
