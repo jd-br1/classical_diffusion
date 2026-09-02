@@ -13,7 +13,6 @@ from classical_diffusion.hopping import (
     get_deterministic_probabilities,
     get_kramers_rate,
 )
-from classical_diffusion.hopping import KramersParameters as KP
 from classical_diffusion.jax import get_measured_data, get_pairwise_isf
 from classical_diffusion.jax.hopping import (
     get_deterministic_isf as get_deterministic_isf_jax,
@@ -54,7 +53,7 @@ if TYPE_CHECKING:
     from classical_diffusion.langevin import CanonicalSystem
 
 CHECK_EVERY = 5
-EARLY_STOP = 1  # 0.0005  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
+EARLY_STOP = 0.001  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 16  # Number of isfs to test on at a time (does this need to be limited?)
 LOSS_BATCH_SIZE = 8  # Number of isfs to calculate loss of at a time
@@ -175,6 +174,8 @@ def loss_fn(
 
     # Index of 1s in times
     index_1s = time_span.n_steps // time_span.t_end
+    index_half_s = int(0.5 * index_1s)
+    index_5s = int(5 * index_1s)
 
     # Pass batched isfs through the model to predict hopping rates and isf offsets
     predictions = jax.vmap(model, (0))(test_params)  # ty: ignore[invalid-argument-type]
@@ -203,7 +204,8 @@ def loss_fn(
 
     # Calculate the error by
     errors = jnp.mean(
-        (corrected_isfs[:, index_1s:] - targets[:, index_1s:]) ** 2,
+        (corrected_isfs[:, index_half_s:index_5s] - targets[:, index_half_s:index_5s])
+        ** 2,
         axis=-1,
     )
 
@@ -328,62 +330,14 @@ def train_model(
 
 
 # Simulation input generator functions
-@jax.jit
-def _vary_omega_well_and_barrier_energy(
-    _key: jax.Array,
-) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
-
-    key1, key2 = jax.random.split(_key)
-    rand1 = jax.random.uniform(key1, shape=(), minval=0.5, maxval=3.0)
-    rand2 = jax.random.uniform(key2, shape=(), minval=0.5, maxval=8.0)
-    omega_well = rand2.astype(jnp.float32)
-    omega_barrier = 5.0
-    barrier_energy = rand1.astype(jnp.float32)
-    m = 1.0
-    temperature = 1.5 / Boltzmann
-    gamma = 0.1
-
-    params = (omega_well, omega_barrier, barrier_energy, m, temperature, gamma)
-    system = KramersSystem1D(
-        params=KramersParameters(
-            omega_well=omega_well,  # ty: ignore[invalid-argument-type]
-            omega_barrier=omega_barrier,
-            barrier_energy=barrier_energy,  # ty: ignore[invalid-argument-type]
-            m=m,
-            temperature=temperature,
-            gamma=gamma,
-        )
-    ).as_canonical()
-
-    return params, system  # ty: ignore[invalid-return-type]
-
-
-@jax.jit
-def _vary_omega_well(
-    _key: jax.Array,
-) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
-
-    rand = jax.random.uniform(_key, shape=(), minval=0.25, maxval=8.0)
-    omega_well = rand.astype(jnp.float32)
-    omega_barrier = 5.0
-    barrier_energy = 3.0
-    m = 1.0
-    temperature = 1.5 / Boltzmann
-    gamma = 0.1
-
-    params = (omega_well, omega_barrier, barrier_energy, m, temperature, gamma)
-    system = KramersSystem1D(
-        params=KramersParameters(
-            omega_well=omega_well,  # ty: ignore[invalid-argument-type]
-            omega_barrier=omega_barrier,
-            barrier_energy=barrier_energy,
-            m=m,
-            temperature=temperature,
-            gamma=gamma,
-        )
-    ).as_canonical()
-
-    return params, system  # ty: ignore[invalid-return-type]
+default_params = KramersParameters(
+    omega_well=1.0,
+    omega_barrier=5.0,
+    barrier_energy=3.0,
+    m=1.0,
+    temperature=0.5 / Boltzmann,
+    gamma=0.1,
+)
 
 
 @jax.jit
@@ -392,53 +346,27 @@ def _vary_barrier_energy(
 ) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
 
     rand = jax.random.uniform(_key, shape=(), minval=0.2, maxval=2.0)
-    omega_well = 1.0
-    omega_barrier = 5.0
-    barrier_energy = rand.astype(jnp.float32)
-    m = 1.0
-    temperature = 1.5 / Boltzmann
-    gamma = 0.1
 
-    params = (omega_well, omega_barrier, barrier_energy, m, temperature, gamma)
+    params = (
+        default_params.omega_well,
+        default_params.omega_barrier,
+        rand.astype(jnp.float32),
+        default_params.m,
+        default_params.temperature,
+        default_params.gamma,
+    )
     system = KramersSystem1D(
         params=KramersParameters(
-            omega_well=omega_well,
-            omega_barrier=omega_barrier,
-            barrier_energy=barrier_energy,  # ty: ignore[invalid-argument-type]
-            m=m,
-            temperature=temperature,
-            gamma=gamma,
+            omega_well=params[0],
+            omega_barrier=params[1],
+            barrier_energy=params[2],  # ty: ignore[invalid-argument-type]
+            m=params[3],
+            temperature=params[4],
+            gamma=params[5],
         )
     ).as_canonical()
 
     return params, system  # ty: ignore[invalid-return-type]
-
-
-@jax.jit
-def _constant(
-    _key: jax.Array,
-) -> tuple[tuple[float, float, float, float, float, float], "CanonicalSystem"]:  # ruff: ignore[quoted-annotation]
-
-    omega_well = 1.0
-    omega_barrier = 5.0
-    barrier_energy = 3.0
-    m = 1.0
-    temperature = 1.5 / Boltzmann
-    gamma = 0.1
-
-    params = (omega_well, omega_barrier, barrier_energy, m, temperature, gamma)
-    system = KramersSystem1D(
-        params=KramersParameters(
-            omega_well=omega_well,
-            omega_barrier=omega_barrier,
-            barrier_energy=barrier_energy,
-            m=m,
-            temperature=temperature,
-            gamma=gamma,
-        )
-    ).as_canonical()
-
-    return params, system
 
 
 @jax.jit
@@ -457,46 +385,46 @@ def _inits_constant(
 def run_langevin_trajectories(
     *,
     time_span: TimeSpan,
-    keys: jax.Array,
+    param_keys: jax.Array,  # shape: (num_isfs)
+    sim_keys: jax.Array,  # shape: (num_isfs, traj_per_isf)
     generate_params: "Callable[        [jax.Array],        tuple[tuple[float, float, float, float, float, float], CanonicalSystem],    ]",  # ruff: ignore[quoted-annotation]
 ) -> JaxEnsembleResults:
     """Run langevin trajectories."""
 
-    def body(time_span: TimeSpan, _key: jax.Array) -> JaxEnsembleResults:
+    def run_group_trajectories(
+        p_key: jax.Array, group_sim_keys: jax.Array
+    ) -> JaxEnsembleResults:
+        # Generate a system for the group
+        params, system = generate_params(p_key)
 
-        param_key, cond_key, sim_key = jax.random.split(_key, 3)
+        def run_one_trajectory(sim_key: jax.Array) -> JaxEnsembleResults:
 
-        params, system = generate_params(param_key)
+            cond_key, solve_key = jax.random.split(sim_key, 2)
 
-        initial_conditions = _inits_constant(cond_key)
+            initial_conditions = _inits_constant(cond_key)
 
-        times, positions, _ = solve_many_overdamped_jax(
-            system,
-            time_span,
-            initial_conditions,
-            _key=sim_key,
-        )
+            times, positions, _ = solve_many_overdamped_jax(
+                system,
+                time_span,
+                initial_conditions,
+                _key=solve_key,
+            )
 
-        return {
-            "parameters": params,  # ty: ignore[invalid-argument-type]
-            "initial_conditions": initial_conditions,
-            "result": (times, positions),
-        }  # ty: ignore[invalid-return-type]
+            return {
+                "parameters": params,  # ty: ignore[invalid-argument-type]
+                "initial_conditions": initial_conditions,
+                "result": (times, positions),
+            }  # ty: ignore[invalid-return-type]
 
-    return jax.vmap(body, (None, 0))(time_span, keys)
+        return jax.vmap(run_one_trajectory, (0))(group_sim_keys)
+
+    grouped_results = jax.vmap(run_group_trajectories, (0, 0))(param_keys, sim_keys)
+
+    # Flatten outer dimension (num_isfs, traj_per_isf) into (n_trak)
+    return jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), grouped_results)  # ty: ignore[invalid-argument-type]
 
 
 # Training data generation functions
-
-
-default_params = KramersParameters(
-    omega_well=1.0,
-    omega_barrier=5.0,
-    barrier_energy=3.0,
-    m=1.0,
-    temperature=1.5 / Boltzmann,
-    gamma=0.1,
-)
 
 
 @timed
@@ -548,19 +476,25 @@ def generate_single_clean_isf(
 @timed
 def generate_many_langevin_trajectories(
     traj_filepath: str,
-    n_traj: int,
+    num_isfs: int,
+    traj_per_isf: int,
     *,
     time_span: TimeSpan,
-    generate_params: "Callable[        [jax.Array],        tuple[tuple[float, float, float, float, float, float], CanonicalSystem],    ]" = _vary_omega_well,  # ruff: ignore[quoted-annotation]
+    generate_params: "Callable[        [jax.Array],        tuple[tuple[float, float, float, float, float, float], CanonicalSystem],    ]" = _vary_barrier_energy,  # ruff: ignore[quoted-annotation]
 ) -> None:
     """Run the langevin simulations and save to file."""
-    keys = jax.random.split(jax.random.key(100), n_traj)
+    param_key, sim_key = jax.random.split(jax.random.key(100))
+    param_keys = jax.random.split(param_key, num_isfs)
+    sim_keys = jax.random.split(sim_key, (num_isfs, traj_per_isf))
 
     # Transfer batched array directly from GPU to CPU as contiguous blocks
     batched_trajectories = jax.tree.map(
         jnp.asarray,
         run_langevin_trajectories(
-            time_span=time_span, keys=keys, generate_params=generate_params
+            time_span=time_span,
+            param_keys=param_keys,
+            sim_keys=sim_keys,
+            generate_params=generate_params,
         ),
     )
 
@@ -855,31 +789,32 @@ def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  #
 
     # Experimental parameters
     time_span = TimeSpan(t_start=0, t_end=25, n_steps=500)
-    delta_k = jnp.pi / 4.0
+    delta_k = jnp.pi / 2.9
 
     # Test parameters
     traj_per_isf = 100
     n_parameter_data_points = 40
     # 19 training isfs per test isf
-    n_isfs = 20 * n_parameter_data_points
+    num_isfs = 20 * n_parameter_data_points
 
     # Define filepaths
     traj_filepath = (
         folderpath
-        + f"/vary_barrier_energy/langevin_{n_isfs * traj_per_isf}_trajectories.pkl"
+        + f"/vary_barrier_energy/langevin_{num_isfs * traj_per_isf}_trajectories.pkl"
     )
     Path(traj_filepath).parent.mkdir(parents=True, exist_ok=True)
     isfs_filepath = (
         folderpath
-        + f"/vary_barrier_energy/langevin_{n_isfs}_isf_averaged_over_{traj_per_isf}.pkl"
+        + f"/vary_barrier_energy/langevin_{num_isfs}_isf_averaged_over_{traj_per_isf}.pkl"
     )
 
     # Ensure isfs exist
     if not Path(traj_filepath).exists():
-        print(f"No data, generating {n_isfs * traj_per_isf} equivalent trajectories")
+        print(f"No data, generating {num_isfs * traj_per_isf} equivalent trajectories")
         generate_many_langevin_trajectories(
             traj_filepath,
-            n_isfs * traj_per_isf,
+            num_isfs,
+            traj_per_isf,
             time_span=time_span,
             generate_params=_vary_barrier_energy,
         )
@@ -889,9 +824,9 @@ def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  #
 
     _check_training_data(
         path
-        + f"/vary_barrier_energy/langevin_{n_isfs * traj_per_isf}_trajectories.pkl",
+        + f"/vary_barrier_energy/langevin_{num_isfs * traj_per_isf}_trajectories.pkl",
         path
-        + f"/vary_barrier_energy/langevin_{n_isfs}_isf_averaged_over_{traj_per_isf}.pkl",
+        + f"/vary_barrier_energy/langevin_{num_isfs}_isf_averaged_over_{traj_per_isf}.pkl",
         time_span=time_span,
     )
 
@@ -975,28 +910,54 @@ def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  #
     line1 = ax.scatter(barrier_energies, hopping_rate)
     line1.set_label("Model")
 
-    def _kramers_rate(
-        barrier_energy: float,
-        omega_well: float = 1.0,
-        omega_barrier: float = 5.0,
-        kbt: float = 0.5,
-        gamma: float = 0.1,
-    ) -> jnp.ndarray:
-        return ((omega_well * omega_barrier) / (2 * jnp.pi * gamma)) * jnp.exp(
-            -barrier_energy / kbt
-        )
+    def _kramers_rate(params: KramersParameters) -> jnp.ndarray:
+        return (
+            (params.omega_well * params.omega_barrier) / (2 * jnp.pi * params.gamma)
+        ) * jnp.exp(-params.barrier_energy / params.kbt)
+
+    def dephasing_rate(params: KramersParameters, delta_k: float) -> jnp.ndarray:
+        lattice_parameter = params.delta_x
+        rate = _kramers_rate(params)
+        return rate * (2 - 2 * jnp.cos(delta_k * lattice_parameter))
 
     (line2,) = ax.plot(
         sorted(barrier_energies),
-        [_kramers_rate(barrier_energy) for barrier_energy in sorted(barrier_energies)],
+        [
+            _kramers_rate(
+                KramersParameters(
+                    omega_well=default_params.omega_well,
+                    omega_barrier=default_params.omega_barrier,
+                    barrier_energy=barrier_energy,
+                    m=default_params.m,
+                    temperature=default_params.temperature,
+                    gamma=default_params.gamma,
+                )
+            )
+            for barrier_energy in sorted(barrier_energies)
+        ],
     )
     line2.set_label("Kramers")
 
     ax.set_xlabel("Barrier energy")
     ax.set_ylabel("Hopping rate")
 
-    ax.set_xlim(0, right=5)
-    ax.set_ylim(0, 10)
+    ax.set_xlim(0, right=max(sorted(barrier_energies)) + 0.5)
+    ax.set_ylim(
+        0,
+        float(
+            _kramers_rate(
+                KramersParameters(
+                    omega_well=default_params.omega_well,
+                    omega_barrier=default_params.omega_barrier,
+                    barrier_energy=min(barrier_energies),
+                    m=default_params.m,
+                    temperature=default_params.temperature,
+                    gamma=default_params.gamma,
+                )
+            )
+            + 0.5
+        ),
+    )
     ax.legend()
     ax.set_title("Kramers")
 
@@ -1028,13 +989,13 @@ def pre_generate_on_gpu(folderpath: str) -> None:
 def _check_training_data(
     traj_filepath: str, isf_filepath: str, time_span: TimeSpan
 ) -> None:
-    params = KP(
-        omega_well=1.0,
-        omega_barrier=5.0,
-        barrier_energy=2.0,
-        m=1.0,
-        temperature=0.5 / Boltzmann,
-        gamma=0.1,
+    params = KramersParameters(
+        omega_well=default_params.omega_well,
+        omega_barrier=default_params.omega_barrier,
+        barrier_energy=1.0,
+        m=default_params.m,
+        temperature=default_params.temperature,
+        gamma=default_params.gamma,
     )
     print("delta_x = ", params.delta_x)
     print("kramer's hop time = ", 1 / get_kramers_rate(params))
@@ -1050,6 +1011,7 @@ def _check_training_data(
     for i in range(min(len(batched["result"][0]), 10)):
         times = batched["result"][0][i]
         x_points = batched["result"][1][i]
+        barrier_energy = batched["parameters"][2][i]
         (line,) = ax.plot(times, x_points[0][0])
         line.set_color("C0")
         lines.append(line)
@@ -1066,6 +1028,7 @@ def _check_training_data(
     ax.set_xlabel("$time$")
     ax.set_ylabel("$x$")
     ax.set_xlim(times[0], times[-1])
+    ax.set_title(f"Blue barrier energy: {barrier_energy:.2f}")
 
     fig.savefig("./examples/hopping_model/training_isfs/training.traj.pdf")
 
@@ -1117,7 +1080,7 @@ def _check_model_fits(
 
     for i in range(min(len(test_list), 15)):
         isf = test_list[i]["isf"]["isf"]
-        offest = test_list[i]["offset"]
+        offset = test_list[i]["offset"]
         hopping_time = hopping_times[i]
         predicted_lattice = Lattice1D(1.0, float(hopping_time))
         model_isf = get_deterministic_isf(
@@ -1125,7 +1088,7 @@ def _check_model_fits(
             (delta_k,),
         )
 
-        corrected_isf = offest * model_isf
+        corrected_isf = offset * model_isf
 
         fig, ax = get_fancy_figure()
         fig, ax = get_figure(ax)
@@ -1138,8 +1101,8 @@ def _check_model_fits(
         ax.set_xlabel("Time / s")
         ax.set_ylabel("ISF")
 
-        ax.set_xlim(0, right=time_span.t_end)
-        ax.set_ylim(-1, 1)
+        ax.set_xlim(0, right=5)
+        ax.set_ylim(0, 1)
         ax.legend()
         ax.set_title("Kramers model test")
 
@@ -1148,4 +1111,4 @@ def _check_model_fits(
 
 if __name__ == "__main__":
     path = "./examples/data"
-    kramers_rate_plot_test(path, resume=True)
+    kramers_rate_plot_test(path, resume=False)
