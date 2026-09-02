@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from classical_diffusion.langevin import CanonicalSystem
 
 CHECK_EVERY = 5
-EARLY_STOP = 0.001  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
+EARLY_STOP = 0.0005  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 16  # Number of isfs to test on at a time (does this need to be limited?)
 LOSS_BATCH_SIZE = 8  # Number of isfs to calculate loss of at a time
@@ -116,7 +116,7 @@ class ResNet(eqx.Module):
         # Project hidden channels down to output
         self.output_layer = eqx.nn.Linear(hidden_dim, 2, key=output_key)
         self.output_layer = eqx.tree_at(
-            lambda l: l.bias,
+            lambda l: l.bias,  # ruff: ignore[ambiguous-variable-name]
             self.output_layer,
             jnp.array([1.0, 0.0]),  # Sets initial hop_time log-scale bias
         )
@@ -160,7 +160,7 @@ def get_deterministic_isf_directly(
 
 
 @eqx.filter_jit
-def loss_fn(
+def loss_fn(  # ruff: ignore[too-many-arguments]
     model: eqx.Module,
     *,
     time_span: TimeSpan,
@@ -224,7 +224,7 @@ def get_hopping_time_and_offset(
 # Training functions
 
 
-def train_model(
+def train_model(  # ruff: ignore[too-many-locals]
     training_data: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
     *,
     time_span: TimeSpan,
@@ -420,8 +420,8 @@ def run_langevin_trajectories(
 
     grouped_results = jax.vmap(run_group_trajectories, (0, 0))(param_keys, sim_keys)
 
-    # Flatten outer dimension (num_isfs, traj_per_isf) into (n_trak)
-    return jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), grouped_results)  # ty: ignore[invalid-argument-type]
+    # Flatten outer dimension (num_isfs, traj_per_isf) into (n_traj)
+    return jax.tree.map(lambda x: x.reshape(-1, *x.shape[2:]), grouped_results)
 
 
 # Training data generation functions
@@ -515,7 +515,7 @@ def generate_isfs(
     """Generate isfs from trajectories saved in ML pipeline and save to file."""
     # Open the trajectories file and load in the trajectories
     with Path(traj_filepath).open("rb") as file:
-        batched = pickle.load(file)
+        batched = pickle.load(file)  # ruff: ignore[suspicious-pickle-usage]
 
     times_all, x_points_all = batched["result"]
     parameters_all = batched["parameters"]
@@ -556,7 +556,7 @@ def untrained_test(folderpath: str) -> None:
     model = ResNet(key=key)
 
     with Path(folderpath + "/langevin_clean_isf.pkl").open("rb") as file:
-        isf_record = pickle.load(file)
+        isf_record = pickle.load(file)  # ruff: ignore[suspicious-pickle-usage]
     x_input = jnp.array([isf_record.get("isf")])
     output = model(x_input)
 
@@ -584,7 +584,7 @@ def single_clean_test(folderpath: str) -> None:  # ruff: ignore[too-many-locals]
 
     # Load isf
     with Path(clean_isf_path).open("rb") as file:
-        clean_isf = pickle.load(file)
+        clean_isf = pickle.load(file)  # ruff: ignore[suspicious-pickle-usage]
 
     # Train model on clean isf
     training_isf = jnp.array(clean_isf.get("isf"))
@@ -592,7 +592,11 @@ def single_clean_test(folderpath: str) -> None:  # ruff: ignore[too-many-locals]
 
     print("Training model")
     trained_model = train_model(
-        (training_isf[None, None, :], training_error[None, None, :]),
+        (
+            training_isf[None, None, :],
+            training_error[None, None, :],
+            jnp.full((1, 1, training_isf.shape[0]), 1.0),
+        ),
         time_span=time_span,
         delta_k=delta_k,
     )
@@ -655,7 +659,7 @@ def many_test(folderpath: str, n_isfs: int, *, resume: bool = False) -> None:  #
     if not Path(traj_filepath).exists():
         print("No data, generating new equivalent trajectories")
         generate_many_langevin_trajectories(
-            traj_filepath, n_isfs * traj_per_isf, time_span=time_span
+            traj_filepath, n_isfs, traj_per_isf, time_span=time_span
         )
     if not Path(isfs_filepath).exists():
         print("No isfs, generating new equivalent isfs")
@@ -677,11 +681,18 @@ def many_test(folderpath: str, n_isfs: int, *, resume: bool = False) -> None:  #
     training_errors = jnp.array(
         [data.get("isf").get("error") for data in training_isf_data]
     )
+    training_offsets = jnp.array(
+        [data.get("isf").get("offset") for data in training_isf_data]
+    )
 
     # Train model: train model
     print("Training model")
     trained_model = train_model(
-        (training_isfs[:, None, :], training_errors[:, None, :]),
+        (
+            training_isfs[:, None, :],
+            training_errors[:, None, :],
+            training_offsets[:, None, :],
+        ),
         time_span=time_span,
         delta_k=delta_k,
         resume=resume,
@@ -699,7 +710,7 @@ def many_test(folderpath: str, n_isfs: int, *, resume: bool = False) -> None:  #
 
     # Load isf
     with Path(clean_isf_path).open("rb") as file:
-        test_isf = pickle.load(file)
+        test_isf = pickle.load(file)  # ruff: ignore[suspicious-pickle-usage]
 
     # Test model: get model output
     hopping_time, offset = get_hopping_time_and_offset(
@@ -735,8 +746,8 @@ def many_test(folderpath: str, n_isfs: int, *, resume: bool = False) -> None:  #
 
     fig.savefig("./examples/hopping_model/model_test_many_equiv.isf.pdf")
 
-    i = 0
-    for data in training_isf_data:
+    for i in range(len(training_isf_data)):
+        data = training_isf_data[i]
         isf = data.get("isf")
         hopping_time, offset = get_hopping_time_and_offset(
             trained_model, jnp.array([isf.get("isf")])
@@ -776,10 +787,9 @@ def many_test(folderpath: str, n_isfs: int, *, resume: bool = False) -> None:  #
         ax.legend()
         ax.set_title("Model trained on many, tested on random")
 
-        i += 1
         fig.savefig(f"./examples/hopping_model/training_isfs/test_{i}.isf.pdf")
 
-        if i == 15:
+        if i == 15:  # ruff: ignore[magic-value-comparison]
             break
 
 
@@ -971,18 +981,18 @@ def pre_generate_on_gpu(folderpath: str) -> None:
     # Experimental parameters
     time_span = TimeSpan(t_start=0, t_end=400, n_steps=200)
 
-    num_trajs = [10000, 100000, 1000000]
+    num_traj = [10000, 100000, 1000000]
 
-    for num_traj in num_trajs:
+    for num in num_traj:
         traj_filepath = (
-            folderpath + f"/vary_barrier_energy/langevin_{num_traj}_equivalent.pkl"
+            folderpath + f"/vary_barrier_energy/langevin_{num}_equivalent.pkl"
         )
         Path(traj_filepath).parent.mkdir(parents=True, exist_ok=True)
 
         if not Path(traj_filepath).exists():
-            print(f"Generating {num_traj} trajectories")
+            print(f"Generating {num} trajectories")
             generate_many_langevin_trajectories(
-                traj_filepath, num_traj, time_span=time_span
+                traj_filepath, num // 10, 10, time_span=time_span
             )
 
 
@@ -1002,7 +1012,7 @@ def _check_training_data(
     print("\nChecking trajectory plot")
     # Open the trajectories file and load in the trajectories
     with Path(traj_filepath).open("rb") as file:
-        batched = pickle.load(file)
+        batched = pickle.load(file)  # ruff: ignore[suspicious-pickle-usage]
 
     fig, ax = get_fancy_figure()
     fig, ax = get_figure(ax)
