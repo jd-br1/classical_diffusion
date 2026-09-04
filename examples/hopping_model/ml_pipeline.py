@@ -52,8 +52,8 @@ if TYPE_CHECKING:
 
     from classical_diffusion.langevin import CanonicalSystem
 
-CHECK_EVERY = 5
-EARLY_STOP = 0.0005  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
+CHECK_EVERY = 1
+EARLY_STOP = 1  # Improvement to loss over CHECK_EVERY epochs deemed small enough to have reached training plateau
 NUM_EPOCHS = 100
 BATCH_SIZE = 16  # Number of isfs to test on at a time (does this need to be limited?)
 LOSS_BATCH_SIZE = 8  # Number of isfs to calculate loss of at a time
@@ -333,7 +333,7 @@ def train_model(  # ruff: ignore[too-many-locals]
 default_params = KramersParameters(
     omega_well=1.0,
     omega_barrier=5.0,
-    barrier_energy=3.0,
+    barrier_energy=1.0,
     m=1.0,
     temperature=0.5 / Boltzmann,
     gamma=0.1,
@@ -793,6 +793,12 @@ def many_test(folderpath: str, n_isfs: int, *, resume: bool = False) -> None:  #
             break
 
 
+def _kramers_rate(params: KramersParameters) -> jnp.ndarray:
+    return (
+        (params.omega_well * params.omega_barrier) / (2 * jnp.pi * params.gamma)
+    ) * jnp.exp(-params.barrier_energy / params.kbt)
+
+
 def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  # ruff: ignore[too-many-locals, too-many-statements]
     """Train a model on a range of barrier_energy values."""
     print("\n\nRunning kramers rate theory\n")
@@ -919,11 +925,6 @@ def kramers_rate_plot_test(folderpath: str, *, resume: bool = False) -> None:  #
     fig, ax = get_figure(ax)
     line1 = ax.scatter(barrier_energies, hopping_rate)
     line1.set_label("Model")
-
-    def _kramers_rate(params: KramersParameters) -> jnp.ndarray:
-        return (
-            (params.omega_well * params.omega_barrier) / (2 * jnp.pi * params.gamma)
-        ) * jnp.exp(-params.barrier_energy / params.kbt)
 
     def dephasing_rate(params: KramersParameters, delta_k: float) -> jnp.ndarray:
         lattice_parameter = params.delta_x
@@ -1077,7 +1078,7 @@ def _check_training_data(
         fig.savefig(f"./examples/hopping_model/training_isfs/training_{i}.isf.pdf")
 
 
-def _check_model_fits(
+def _check_model_fits(  # ruff: ignore[too-many-locals]
     trained_model: ResNet, test_list: list[dict], *, time_span: TimeSpan, delta_k: float
 ) -> None:
 
@@ -1091,6 +1092,8 @@ def _check_model_fits(
     for i in range(min(len(test_list), 15)):
         isf = test_list[i]["isf"]["isf"]
         offset = test_list[i]["offset"]
+        params = test_list[i]["parameters"]
+
         hopping_time = hopping_times[i]
         predicted_lattice = Lattice1D(1.0, float(hopping_time))
         model_isf = get_deterministic_isf(
@@ -1098,15 +1101,38 @@ def _check_model_fits(
             (delta_k,),
         )
 
-        corrected_isf = offset * model_isf
+        corrected_model_isf = offset * model_isf
+
+        kramers_rate = _kramers_rate(
+            KramersParameters(
+                omega_well=params[0],
+                omega_barrier=params[1],
+                barrier_energy=params[2],
+                m=params[3],
+                temperature=params[4],
+                gamma=params[5],
+            )
+        )
+        kramers_time = 1.0 / kramers_rate
+
+        kramers_lattice = Lattice1D(np.pi / delta_k, float(kramers_time))
+        kramers_isf = get_deterministic_isf(
+            get_deterministic_probabilities(kramers_lattice, (1000,), time_span),
+            (delta_k,),
+        )
+
+        corrected_kramers_isf = offset * kramers_isf
 
         fig, ax = get_fancy_figure()
         fig, ax = get_figure(ax)
         (line1,) = ax.plot(times, isf)
         line1.set_label("Langevin ISF")
 
-        (line2,) = ax.plot(times, corrected_isf)
+        (line2,) = ax.plot(times, corrected_model_isf)
         line2.set_label("Corrected Model ISF")
+
+        (line3,) = ax.plot(times, corrected_kramers_isf)
+        line3.set_label("Corrected Kramers ISF")
 
         ax.set_xlabel("Time / s")
         ax.set_ylabel("ISF")
@@ -1114,11 +1140,11 @@ def _check_model_fits(
         ax.set_xlim(0, right=5)
         ax.set_ylim(0, 1)
         ax.legend()
-        ax.set_title("Kramers model test")
+        ax.set_title(f"Barrier_energy = {params[2]:.2f}")
 
         fig.savefig(f"./examples/hopping_model/training_isfs/kramers_test_{i}.isf.pdf")
 
 
 if __name__ == "__main__":
     path = "./examples/data"
-    kramers_rate_plot_test(path, resume=False)
+    kramers_rate_plot_test(path, resume=True)
