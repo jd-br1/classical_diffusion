@@ -34,6 +34,7 @@ from classical_diffusion.langevin._langevin import (
 from classical_diffusion.langevin._system import (
     CanonicalSystem,
     HarmonicSystem,
+    KramersParameters,
     KramersSystem1D,
     PeriodicSystem1D,
     PeriodicSystemFCC,
@@ -61,6 +62,7 @@ __all__ = [
     "SODIUM_COPPER_SYSTEM_2D",
     "CanonicalSystem",
     "HarmonicSystem",
+    "KramersParameters",
     "KramersSystem1D",
     "LangevinSimulationResult",
     "PeriodicSystem1D",
